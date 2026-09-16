@@ -1,0 +1,48 @@
+# Environment & Local Secrets
+.env
+.env.local
+.env.*.local
+
+# Node.js & Next.js
+node_modules/
+.next/
+out/
+build/
+dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.next/
+
+# Python & Pytest
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.pytest_cache/
+.coverage
+htmlcov/
+.nox/
+.hypothesis/
+
+# IDE & OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker Data Volumes
+postgres_data/
+opensearch_data/
+qdrant_data/
+redis_data/
+ollama_data/
