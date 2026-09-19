@@ -111,7 +111,11 @@ async def check_system_health(db: AsyncSession = Depends(get_async_session)) -> 
     # 4. Redis Check
     start_time = time.perf_counter()
     try:
-        r = aioredis.from_url(settings.REDIS_URL)
+        r = aioredis.from_url(
+            settings.REDIS_URL,
+            socket_connect_timeout=1.0,
+            socket_timeout=1.0
+        )
         pong = await r.ping()
         await r.aclose()
         latency = (time.perf_counter() - start_time) * 1000

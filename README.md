@@ -63,9 +63,9 @@ Frontend (Next.js / React / TypeScript / Tailwind CSS)
 ## 🗺️ Development Roadmap & Phases
 
 - [x] **Phase 0: Architecture & Specs** — Define PRD, system architecture, data models, and repository layout.
-- [ ] **Phase 1: Basic Lexical Search Core** — Document upload/ingestion, Postgres SSOT storage, OpenSearch BM25 keyword search & results UI.
-- [ ] **Phase 2: Controlled Web Crawler** — Allowlist-based crawling, URL frontier management, JS rendering via Playwright, `robots.txt` compliance.
-- [ ] **Phase 3: Search Quality & Ranking** — Multi-signal ranking function (BM25 + authority + freshness), "Why this result?" breakdown inspector.
+- [x] **Phase 1: Basic Lexical Search Core** — Document upload/ingestion, Postgres SSOT storage, OpenSearch BM25 keyword search & results UI.
+- [x] **Phase 2: Controlled Web Crawler** — Allowlist-based crawling, URL frontier management, JS rendering, `robots.txt` compliance & crawl dashboard.
+- [x] **Phase 3: Search Quality & Ranking** — Multi-signal ranking function (BM25 + authority + freshness), "Why this result?" breakdown inspector.
 - [ ] **Phase 4: Semantic Search & Evaluation** — Local vector embeddings, Qdrant integration, RRF fusion, automated benchmark metric suite (Precision, Recall, MRR, NDCG).
 - [ ] **Phase 5: Document Intelligence** — Exact location tracking (pages, paragraphs, code lines), inline PDF highlighter.
 - [ ] **Phase 6: Personal Knowledge Engine** — Data classification (Public/Private/Sensitive), source enable/disable toggle.

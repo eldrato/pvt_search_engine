@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     # Database URLs
     DATABASE_URL: str = "postgresql+asyncpg://aegis:aegis_password@localhost:5432/aegis"
     SYNC_DATABASE_URL: str = "postgresql+psycopg2://aegis:aegis_password@localhost:5432/aegis"
+    FALLBACK_SQLITE_URL: str = "sqlite+aiosqlite:///./aegis_local.db"
+    USE_SQLITE_FALLBACK: bool = True
 
     # Derived Storage Services
     OPENSEARCH_URL: str = "http://localhost:9200"
