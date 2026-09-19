@@ -83,30 +83,51 @@ async def check_system_health(db: AsyncSession = Depends(get_async_session)) -> 
     # 3. Qdrant Check
     start_time = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        from app.services.qdrant import qdrant_service
+        async with httpx.AsyncClient(timeout=1.5) as client:
             resp = await client.get(f"{settings.QDRANT_URL}/healthz")
             latency = (time.perf_counter() - start_time) * 1000
             if resp.status_code == 200:
                 services["qdrant"] = ServiceHealth(
                     status="healthy",
                     latency_ms=round(latency, 2),
-                    details={"vector_store": "Qdrant HNSW"}
+                    details={"vector_store": "Qdrant Server HNSW", "vectors_count": qdrant_service.count_vectors()}
+                )
+            else:
+                services["qdrant"] = ServiceHealth(
+                    status="degraded",
+                    latency_ms=round(latency, 2),
+                    details={"vector_store": "Qdrant Embedded Local", "vectors_count": qdrant_service.count_vectors()}
+                )
+    except Exception:
+        # Check if local fallback is active
+        try:
+            from app.services.qdrant import qdrant_service
+            if qdrant_service.is_connected():
+                latency = (time.perf_counter() - start_time) * 1000
+                services["qdrant"] = ServiceHealth(
+                    status="healthy",
+                    latency_ms=round(latency, 2),
+                    details={
+                        "vector_store": "Qdrant Embedded Local (Active)",
+                        "vectors_count": qdrant_service.count_vectors(),
+                        "mode": "standalone_local"
+                    }
                 )
             else:
                 overall_healthy = False
                 services["qdrant"] = ServiceHealth(
-                    status="degraded",
-                    latency_ms=round(latency, 2),
-                    details={"status_code": resp.status_code}
+                    status="unreachable",
+                    latency_ms=round((time.perf_counter() - start_time) * 1000, 2),
+                    details={"error": "Vector service offline"}
                 )
-    except Exception as e:
-        overall_healthy = False
-        logger.error(f"Qdrant health check failed: {e}")
-        services["qdrant"] = ServiceHealth(
-            status="unreachable",
-            latency_ms=round((time.perf_counter() - start_time) * 1000, 2),
-            details={"error": str(e)}
-        )
+        except Exception as local_err:
+            overall_healthy = False
+            services["qdrant"] = ServiceHealth(
+                status="unreachable",
+                latency_ms=round((time.perf_counter() - start_time) * 1000, 2),
+                details={"error": str(local_err)}
+            )
 
     # 4. Redis Check
     start_time = time.perf_counter()

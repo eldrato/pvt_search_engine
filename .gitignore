@@ -43,9 +43,11 @@ Thumbs.db
 *.swp
 *.swo
 
-# Docker Data Volumes
+# Docker Data Volumes & Local Embedded Storage
 postgres_data/
 opensearch_data/
 qdrant_data/
 redis_data/
 ollama_data/
+aegis_qdrant_storage/
+

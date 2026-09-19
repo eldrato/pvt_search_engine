@@ -24,6 +24,10 @@ class SearchHit(BaseModel):
     location_meta: Dict[str, Any] = Field(default_factory=dict)
     created_at: Optional[str] = None
     score_breakdown: Optional[ScoreBreakdown] = None
+    semantic_score: Optional[float] = None
+    lexical_rank: Optional[int] = None
+    semantic_rank: Optional[int] = None
+    rrf_score: Optional[float] = None
 
 
 class SearchResponse(BaseModel):
@@ -36,17 +40,20 @@ class SearchResponse(BaseModel):
 
 @router.get("", response_model=SearchResponse)
 async def lexical_search(
-    q: str = Query(..., min_length=1, description="Keyword search query"),
+    q: str = Query(..., min_length=1, description="Search query string"),
+    mode: str = Query("hybrid", pattern="^(hybrid|lexical|semantic)$", description="Retrieval mode (hybrid, lexical, semantic)"),
     source_type: Optional[str] = Query(None, description="Filter by source type (upload, note, code, web)"),
     limit: int = Query(20, ge=1, le=100, description="Max results to return"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     db: AsyncSession = Depends(get_async_session)
 ):
     """
-    Search ingested personal intelligence using BM25 keyword matching with query highlighting and precision anchors.
+    Search ingested personal intelligence using Hybrid Fusion (BM25 + Dense Vectors via RRF),
+    pure Lexical BM25, or pure Semantic Vector retrieval with Multi-Signal ranking.
     """
     results = await search_service.search(
         query=q,
+        mode=mode,
         source_type=source_type,
         limit=limit,
         offset=offset,

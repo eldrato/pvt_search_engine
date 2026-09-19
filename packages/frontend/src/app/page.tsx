@@ -58,6 +58,10 @@ interface ScoreBreakdown {
   freshness_boost: number;
   phrase_boost: number;
   final_score: number;
+  semantic_similarity?: number;
+  lexical_rank?: number;
+  semantic_rank?: number;
+  rrf_score?: number;
   explanation: string[];
 }
 
@@ -75,6 +79,10 @@ interface SearchHit {
   location_meta: Record<string, any>;
   created_at?: string;
   score_breakdown?: ScoreBreakdown;
+  semantic_score?: number;
+  lexical_rank?: number;
+  semantic_rank?: number;
+  rrf_score?: number;
 }
 
 interface SearchResponse {
@@ -135,6 +143,7 @@ export default function AegisDashboard() {
   // Search state
   const [query, setQuery] = useState<string>('');
   const [selectedSourceType, setSelectedSourceType] = useState<string>('all');
+  const [searchMode, setSearchMode] = useState<'hybrid' | 'lexical' | 'semantic'>('hybrid');
   const [searchResponse, setSearchResponse] = useState<SearchResponse | null>(null);
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [hasSearched, setHasSearched] = useState<boolean>(false);
@@ -358,7 +367,7 @@ export default function AegisDashboard() {
     setIsSearching(true);
     setHasSearched(true);
     try {
-      let url = `${API_BASE}/search?q=${encodeURIComponent(trimmed)}&limit=25`;
+      let url = `${API_BASE}/search?q=${encodeURIComponent(trimmed)}&limit=25&mode=${encodeURIComponent(searchMode)}`;
       if (selectedSourceType !== 'all') {
         url += `&source_type=${encodeURIComponent(selectedSourceType)}`;
       }
@@ -388,7 +397,7 @@ export default function AegisDashboard() {
       }
     }, 350);
     return () => clearTimeout(timer);
-  }, [query, selectedSourceType]);
+  }, [query, selectedSourceType, searchMode]);
 
   const handleFileUpload = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -605,7 +614,7 @@ export default function AegisDashboard() {
               <div className="flex items-center gap-2">
                 <Sparkles className="w-4 h-4 text-indigo-400" />
                 <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                  Lexical BM25 Multi-Modal Retrieval
+                  Multi-Modal Hybrid Retrieval Engine (RRF Fusion)
                 </span>
               </div>
               <div className="text-[11px] text-slate-400">
@@ -647,31 +656,59 @@ export default function AegisDashboard() {
               </button>
             </div>
 
-            {/* Filter Tags */}
-            <div className="flex items-center gap-2 pt-1 text-xs">
-              <span className="text-slate-500 flex items-center gap-1 text-[11px]">
-                <Sliders className="w-3 h-3" /> Filter:
-              </span>
-              {[
-                { id: 'all', label: 'All Sources' },
-                { id: 'upload', label: 'Uploaded Files' },
-                { id: 'note', label: 'Notes' },
-                { id: 'code', label: 'Code' },
-                { id: 'web', label: 'Web Crawled' }
-              ].map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setSelectedSourceType(tab.id)}
-                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
-                    selectedSourceType === tab.id
-                      ? 'bg-indigo-600/30 border border-indigo-500/50 text-indigo-300'
-                      : 'bg-slate-900/50 border border-slate-800 text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  {tab.label}
-                </button>
-              ))}
+            {/* Search Mode & Source Filter Tags Row */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-1 text-xs">
+              {/* Search Mode Selector */}
+              <div className="flex items-center gap-1 bg-slate-950/90 p-1 rounded-lg border border-slate-800 shadow-inner">
+                <span className="text-slate-400 text-[10px] font-bold uppercase tracking-wider px-2 flex items-center gap-1">
+                  <Cpu className="w-3 h-3 text-indigo-400" /> Mode:
+                </span>
+                {[
+                  { id: 'hybrid', label: '⚡ Hybrid (RRF)' },
+                  { id: 'lexical', label: '🔍 Lexical (BM25)' },
+                  { id: 'semantic', label: '🧠 Semantic (Vectors)' },
+                ].map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => setSearchMode(m.id as any)}
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
+                      searchMode === m.id
+                        ? 'bg-indigo-600 text-white font-semibold shadow-md shadow-indigo-600/30'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/60'
+                    }`}
+                  >
+                    <span>{m.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Source Filters */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-slate-500 flex items-center gap-1 text-[11px]">
+                  <Sliders className="w-3 h-3" /> Sources:
+                </span>
+                {[
+                  { id: 'all', label: 'All' },
+                  { id: 'upload', label: 'Files' },
+                  { id: 'note', label: 'Notes' },
+                  { id: 'code', label: 'Code' },
+                  { id: 'web', label: 'Web' }
+                ].map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setSelectedSourceType(tab.id)}
+                    className={`px-2 py-0.5 rounded-md text-xs font-medium transition-all ${
+                      selectedSourceType === tab.id
+                        ? 'bg-indigo-600/30 border border-indigo-500/50 text-indigo-300'
+                        : 'bg-slate-900/50 border border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
             </div>
           </form>
         </div>
@@ -724,7 +761,24 @@ export default function AegisDashboard() {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 flex-shrink-0">
+                  <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
+                    {/* Fusion / Match Type Badge */}
+                    {hit.lexical_rank && hit.semantic_rank ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-indigo-500/20 border border-indigo-500/40 text-indigo-300 font-semibold">
+                        <span>⚡ Hybrid RRF</span>
+                        <span className="text-[9px] text-slate-400">BM25 #{hit.lexical_rank} · Vec #{hit.semantic_rank}</span>
+                      </span>
+                    ) : hit.semantic_rank ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-purple-500/20 border border-purple-500/40 text-purple-300 font-semibold">
+                        <span>🧠 Semantic</span>
+                        <span className="text-[9px] text-slate-400">Vec #{hit.semantic_rank}</span>
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 font-semibold">
+                        <span>🔍 Lexical</span>
+                      </span>
+                    )}
+
                     {/* Precision Anchor badge */}
                     <span className="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/20 text-indigo-300">
                       {hit.anchor_label}
@@ -775,21 +829,42 @@ export default function AegisDashboard() {
                       </div>
                     </div>
 
-                    {/* Signal Gauges Grid */}
-                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs font-mono">
-                      {/* 1. Base BM25 */}
+                    {/* Signal Gauges Grid (6 Signals) */}
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2 text-xs font-mono">
+                      {/* 1. Base BM25 / Fused */}
                       <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 flex flex-col gap-1">
-                        <span className="text-[10px] text-slate-400 uppercase font-sans">Base Lexical</span>
+                        <span className="text-[10px] text-slate-400 uppercase font-sans">
+                          {hit.score_breakdown.rrf_score ? 'Fused RRF' : 'Base Lexical'}
+                        </span>
                         <div className="flex items-baseline justify-between">
                           <span className="text-white font-bold">{hit.score_breakdown.base_bm25}</span>
-                          <span className="text-[9px] text-slate-500">BM25</span>
+                          <span className="text-[9px] text-slate-500">{hit.score_breakdown.rrf_score ? 'RRF' : 'BM25'}</span>
                         </div>
                         <div className="w-full bg-slate-800 h-1 rounded-full overflow-hidden mt-1">
                           <div className="bg-indigo-400 h-full rounded-full" style={{ width: `${Math.min(100, (hit.score_breakdown.base_bm25 / 10) * 100)}%` }} />
                         </div>
                       </div>
 
-                      {/* 2. Title Boost */}
+                      {/* 2. Semantic Similarity */}
+                      <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 flex flex-col gap-1">
+                        <span className="text-[10px] text-slate-400 uppercase font-sans">Semantic Sim</span>
+                        <div className="flex items-baseline justify-between">
+                          <span className={`font-bold ${hit.score_breakdown.semantic_similarity !== undefined && hit.score_breakdown.semantic_similarity !== null ? 'text-purple-300' : 'text-slate-500'}`}>
+                            {hit.score_breakdown.semantic_similarity !== undefined && hit.score_breakdown.semantic_similarity !== null
+                              ? `${(hit.score_breakdown.semantic_similarity * 100).toFixed(1)}%`
+                              : 'N/A'}
+                          </span>
+                          <span className="text-[9px] text-slate-500">Cosine</span>
+                        </div>
+                        <div className="w-full bg-slate-800 h-1 rounded-full overflow-hidden mt-1">
+                          <div
+                            className="bg-gradient-to-r from-indigo-500 to-purple-400 h-full rounded-full"
+                            style={{ width: `${Math.min(100, Math.max(0, (hit.score_breakdown.semantic_similarity || 0) * 100))}%` }}
+                          />
+                        </div>
+                      </div>
+
+                      {/* 3. Title Boost */}
                       <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 flex flex-col gap-1">
                         <span className="text-[10px] text-slate-400 uppercase font-sans">Title Match</span>
                         <div className="flex items-baseline justify-between">
@@ -803,7 +878,7 @@ export default function AegisDashboard() {
                         </div>
                       </div>
 
-                      {/* 3. Authority Boost */}
+                      {/* 4. Authority Boost */}
                       <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 flex flex-col gap-1">
                         <span className="text-[10px] text-slate-400 uppercase font-sans">Authority</span>
                         <div className="flex items-baseline justify-between">
@@ -815,7 +890,7 @@ export default function AegisDashboard() {
                         </div>
                       </div>
 
-                      {/* 4. Freshness Factor */}
+                      {/* 5. Freshness Factor */}
                       <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 flex flex-col gap-1">
                         <span className="text-[10px] text-slate-400 uppercase font-sans">Freshness</span>
                         <div className="flex items-baseline justify-between">
@@ -827,7 +902,7 @@ export default function AegisDashboard() {
                         </div>
                       </div>
 
-                      {/* 5. Phrase Proximity */}
+                      {/* 6. Phrase Proximity */}
                       <div className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 flex flex-col gap-1">
                         <span className="text-[10px] text-slate-400 uppercase font-sans">Phrase Match</span>
                         <div className="flex items-baseline justify-between">
@@ -1017,12 +1092,16 @@ export default function AegisDashboard() {
                   <span className="text-slate-300">Phase 2: Controlled Crawler</span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-mono">DONE</span>
                 </div>
+                <div className="p-2.5 rounded-lg bg-slate-900/60 border border-emerald-500/30 flex items-center justify-between">
+                  <span className="text-slate-300">Phase 3: Multi-Signal Ranking</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-mono">DONE</span>
+                </div>
                 <div className="p-2.5 rounded-lg bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-between">
-                  <span className="text-white font-medium">Phase 3: Multi-Signal Ranking</span>
+                  <span className="text-white font-medium">Phase 4: Semantic Vectors & Evaluation</span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/40 text-indigo-200 font-mono">ACTIVE</span>
                 </div>
                 <div className="p-2.5 rounded-lg bg-slate-900/40 border border-slate-800 flex items-center justify-between opacity-60">
-                  <span className="text-slate-400">Phase 4: Semantic Vectors & Evaluation</span>
+                  <span className="text-slate-400">Phase 5: Document Intelligence</span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-500 font-mono">NEXT</span>
                 </div>
               </div>

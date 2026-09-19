@@ -66,7 +66,7 @@ Frontend (Next.js / React / TypeScript / Tailwind CSS)
 - [x] **Phase 1: Basic Lexical Search Core** — Document upload/ingestion, Postgres SSOT storage, OpenSearch BM25 keyword search & results UI.
 - [x] **Phase 2: Controlled Web Crawler** — Allowlist-based crawling, URL frontier management, JS rendering, `robots.txt` compliance & crawl dashboard.
 - [x] **Phase 3: Search Quality & Ranking** — Multi-signal ranking function (BM25 + authority + freshness), "Why this result?" breakdown inspector.
-- [ ] **Phase 4: Semantic Search & Evaluation** — Local vector embeddings, Qdrant integration, RRF fusion, automated benchmark metric suite (Precision, Recall, MRR, NDCG).
+- [x] **Phase 4: Semantic Search & Evaluation** — FastEmbed local ONNX vectors, Qdrant indexing & local fallback, Reciprocal Rank Fusion (RRF k=60), IR benchmark suite (P@K, R@K, MRR, NDCG@K).
 - [ ] **Phase 5: Document Intelligence** — Exact location tracking (pages, paragraphs, code lines), inline PDF highlighter.
 - [ ] **Phase 6: Personal Knowledge Engine** — Data classification (Public/Private/Sensitive), source enable/disable toggle.
 - [ ] **Phase 7: Grounded Knowledge Graph** — Entity & relationship extraction with source span grounding, interactive graph visualizer.
@@ -128,6 +128,31 @@ npm run dev
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ---
+
+## ⚡ Hybrid Search & IR Evaluation (Phase 4)
+
+Aegis implements tri-mode retrieval powered by **Reciprocal Rank Fusion (RRF)**:
+- **`hybrid` (Default)**: Fuses OpenSearch BM25 lexical ranking and Qdrant dense vector cosine similarity ($k=60$):
+  $$RRF(d) = \frac{w_{\text{lexical}}}{60 + \text{rank}_{\text{lexical}}(d)} + \frac{w_{\text{semantic}}}{60 + \text{rank}_{\text{semantic}}(d)}$$
+- **`lexical`**: Fast keyword retrieval using OpenSearch / SQLite inverted text search.
+- **`semantic`**: Dense vector semantic retrieval using local CPU-based FastEmbed (`BAAI/bge-small-en-v1.5`, 384 dimensions).
+
+### Re-indexing Derived State
+```bash
+# Reindex both OpenSearch and Qdrant from the Postgres/SQLite SSOT
+python scripts/reindex.py --target all
+```
+
+### Running Information Retrieval (IR) Benchmarks
+```bash
+# Evaluate retrieval quality across gold-standard test cases
+python scripts/evaluate_retrieval.py --k 5
+# Or query via the REST API:
+# GET http://127.0.0.1:8000/api/v1/evaluation/benchmark?k=5
+```
+
+---
+
 
 ## 🔒 Security Boundary & Storage Invariants
 

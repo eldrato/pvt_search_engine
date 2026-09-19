@@ -6,12 +6,16 @@ from pydantic import BaseModel, Field
 
 
 class ScoreBreakdown(BaseModel):
-    base_bm25: float = Field(..., description="Raw BM25 / lexical match score")
+    base_bm25: float = Field(..., description="Raw BM25 / lexical / fused base match score")
     title_boost: float = Field(..., description="Multiplier for title and section anchor matches [1.0 - 1.6]")
     authority_boost: float = Field(..., description="Multiplier for document provenance/source type [1.0 - 1.5]")
     freshness_boost: float = Field(..., description="Multiplier based on document age half-life decay [0.5 - 1.0]")
     phrase_boost: float = Field(..., description="Multiplier for exact phrase proximity [1.0 - 1.25]")
     final_score: float = Field(..., description="Final composite relevance score")
+    semantic_similarity: Optional[float] = Field(None, description="Dense vector cosine similarity score [0.0 - 1.0]")
+    lexical_rank: Optional[int] = Field(None, description="Rank in lexical BM25 retrieval stream")
+    semantic_rank: Optional[int] = Field(None, description="Rank in dense vector retrieval stream")
+    rrf_score: Optional[float] = Field(None, description="Reciprocal Rank Fusion score before multi-signal boosts")
     explanation: List[str] = Field(default_factory=list, description="Human-readable explanation of ranking signals")
 
 
@@ -206,13 +210,33 @@ class RankingScorer:
         final_score = base_bm25 * title_boost * auth_boost * fresh_boost * phrase_boost
         final_score = round(final_score, 4)
 
+        semantic_similarity = hit.get("semantic_score")
+        if semantic_similarity is not None:
+            semantic_similarity = round(float(semantic_similarity), 4)
+
+        lexical_rank = hit.get("lexical_rank")
+        semantic_rank = hit.get("semantic_rank")
+        rrf_score = hit.get("rrf_score")
+        if rrf_score is not None:
+            rrf_score = round(float(rrf_score), 5)
+
+        base_label = "Base fused RRF score" if rrf_score is not None else "Base match score"
         explanations = [
-            f"Base lexical score: {base_bm25:.3f}",
+            f"{base_label}: {base_bm25:.3f}",
             title_reason,
             auth_reason,
             fresh_reason,
             phrase_reason
         ]
+
+        if semantic_similarity is not None:
+            explanations.append(f"Semantic similarity: {semantic_similarity:.3f} (cosine distance)")
+        if lexical_rank is not None and semantic_rank is not None:
+            explanations.append(f"Hybrid RRF positions: BM25 #{lexical_rank} · Vector #{semantic_rank}")
+        elif lexical_rank is not None:
+            explanations.append(f"Lexical BM25 position: #{lexical_rank}")
+        elif semantic_rank is not None:
+            explanations.append(f"Dense vector position: #{semantic_rank}")
 
         breakdown = ScoreBreakdown(
             base_bm25=base_bm25,
@@ -221,6 +245,10 @@ class RankingScorer:
             freshness_boost=fresh_boost,
             phrase_boost=phrase_boost,
             final_score=final_score,
+            semantic_similarity=semantic_similarity,
+            lexical_rank=lexical_rank,
+            semantic_rank=semantic_rank,
+            rrf_score=rrf_score,
             explanation=explanations
         )
 

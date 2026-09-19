@@ -8,6 +8,8 @@ from app.models.document import Document, DocumentChunk
 from app.ingestion.parsers import get_parser, ParsedDocument
 from app.ingestion.chunker import Chunker, Chunk
 from app.services.opensearch import opensearch_service
+from app.services.embedding import embedding_service
+from app.services.qdrant import qdrant_service
 from app.core.logging import logger
 
 
@@ -106,6 +108,16 @@ class IngestionService:
         if opensearch_service.is_connected():
             indexed_count = opensearch_service.bulk_index_chunks(opensearch_payloads)
             logger.info(f"Indexed {indexed_count} chunks in OpenSearch for document {doc_id}")
+
+        # 6. Index into Qdrant (Derived Dense Vector Index)
+        try:
+            if qdrant_service.is_connected() and chunks:
+                chunk_texts = [c.content for c in chunks]
+                vectors = embedding_service.embed_documents(chunk_texts)
+                qdrant_indexed = qdrant_service.upsert_chunks(opensearch_payloads, vectors)
+                logger.info(f"Indexed {qdrant_indexed} vectors in Qdrant for document {doc_id}")
+        except Exception as q_err:
+            logger.warning(f"Failed to index vectors in Qdrant for document {doc_id}: {q_err}")
 
         return {
             "document": doc.to_dict() if hasattr(doc, "to_dict") else {"id": doc_id, "title": parsed_doc.title},
