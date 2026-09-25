@@ -1,9 +1,11 @@
 import hashlib
 import os
+import re
 from typing import Optional, Dict, Any, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.models.document import Document, DocumentChunk
 from app.ingestion.parsers import get_parser, ParsedDocument
 from app.ingestion.chunker import Chunker, Chunk
@@ -50,13 +52,30 @@ class IngestionService:
         # 3. Generate structural chunks
         chunks: List[Chunk] = self.chunker.chunk_document(parsed_doc)
 
-        # 4. Save to SSOT Database
-        combined_meta = {**(doc_metadata or {}), **parsed_doc.metadata}
+        # 4. Persist raw file to STORAGE_DIR for document preview, PDF rendering & download
+        storage_file_path = filename
+        try:
+            os.makedirs(settings.STORAGE_DIR, exist_ok=True)
+            safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', os.path.basename(filename)) or "document.bin"
+            target_file_path = os.path.join(settings.STORAGE_DIR, f"{content_hash[:16]}_{safe_name}")
+            with open(target_file_path, "wb") as f:
+                f.write(content)
+            storage_file_path = target_file_path
+        except Exception as store_err:
+            logger.warning(f"Could not persist file to STORAGE_DIR: {store_err}")
+
+        # 5. Save to SSOT Database
+        combined_meta = {
+            **(doc_metadata or {}),
+            **parsed_doc.metadata,
+            "original_filename": filename,
+            "storage_file_path": storage_file_path
+        }
 
         doc = Document(
             title=parsed_doc.title,
             source_type=source_type,
-            file_path=filename,
+            file_path=storage_file_path,
             mime_type=parsed_doc.mime_type,
             file_size_bytes=file_size,
             content_hash=content_hash,

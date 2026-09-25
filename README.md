@@ -66,8 +66,7 @@ Frontend (Next.js / React / TypeScript / Tailwind CSS)
 - [x] **Phase 1: Basic Lexical Search Core** — Document upload/ingestion, Postgres SSOT storage, OpenSearch BM25 keyword search & results UI.
 - [x] **Phase 2: Controlled Web Crawler** — Allowlist-based crawling, URL frontier management, JS rendering, `robots.txt` compliance & crawl dashboard.
 - [x] **Phase 3: Search Quality & Ranking** — Multi-signal ranking function (BM25 + authority + freshness), "Why this result?" breakdown inspector.
-- [x] **Phase 4: Semantic Search & Evaluation** — FastEmbed local ONNX vectors, Qdrant indexing & local fallback, Reciprocal Rank Fusion (RRF k=60), IR benchmark suite (P@K, R@K, MRR, NDCG@K).
-- [ ] **Phase 5: Document Intelligence** — Exact location tracking (pages, paragraphs, code lines), inline PDF highlighter.
+- [x] **Phase 5: Document Intelligence** — Exact location tracking (pages, paragraphs, bboxes, code lines), persistent storage, dynamic PyMuPDF PDF page renderer & highlighter, surrounding reading context navigation, and inline PDF/code viewer.
 - [ ] **Phase 6: Personal Knowledge Engine** — Data classification (Public/Private/Sensitive), source enable/disable toggle.
 - [ ] **Phase 7: Grounded Knowledge Graph** — Entity & relationship extraction with source span grounding, interactive graph visualizer.
 - [ ] **Phase 8: Private RAG & Citation Inspector** — Local Ollama LLM integration, strict prompt sandbox, automated citation validator.
@@ -150,6 +149,24 @@ python scripts/evaluate_retrieval.py --k 5
 # Or query via the REST API:
 # GET http://127.0.0.1:8000/api/v1/evaluation/benchmark?k=5
 ```
+
+---
+
+## 📄 Document Intelligence & Exact Location Tracking (Phase 5)
+
+Aegis provides deep document inspection, visual ground-truth evidence, and exact location tracking:
+- **Precision Anchors**: Chunks are anchored to exact physical coordinates:
+  - **PDFs**: Page numbers, paragraph blocks, and precise bounding boxes `[x0, y0, x1, y1]`.
+  - **DOCX / Markdown**: Paragraph indices, table cells, and heading hierarchies.
+  - **Code**: Line number ranges (`file.py:10-40`) and language syntax tagging.
+- **Dynamic PDF Rendering & Highlighting**:
+  - `GET /api/v1/documents/{doc_id}/pdf/page/{page}`: Renders 150 DPI PNG pages with amber visual highlights over matched bounding boxes and query search terms.
+  - `GET /api/v1/documents/{doc_id}/pdf/highlighted`: Generates standard annotated PDF copies for download.
+- **Surrounding Context Navigation**:
+  - `GET /api/v1/documents/{doc_id}/location/{chunk_index}`: Fetches target chunk location metadata along with preceding and succeeding chunks for reading context.
+  - `GET /api/v1/documents/{doc_id}/locations`: Complete structural hierarchy and page/paragraph map.
+- **Persistent Local File Storage**: Ingested files are preserved at `./storage/documents` with SHA-256 deduplication and inline file streaming via `GET /api/v1/documents/{doc_id}/file`.
+- **Interactive Frontend Workspace**: Direct drawer inspection tabs for Visual Evidence, Inline PDF Highlighter (with page navigation, zoom, and query highlight toggles), Code Inspector with line-numbered gutters, and Ranking Signal analysis.
 
 ---
 

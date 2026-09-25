@@ -11,7 +11,9 @@ class TextBlock(BaseModel):
     page_number: Optional[int] = None
     line_start: Optional[int] = None
     line_end: Optional[int] = None
+    paragraph_index: Optional[int] = None
     section_title: Optional[str] = None
+    bbox: Optional[List[float]] = None  # [x0, y0, x1, y1] coordinates
     extra_meta: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -38,12 +40,17 @@ class TextParser(BaseParser):
 
         lines = text.splitlines()
         blocks = []
+        para_idx = 0
         for i, line in enumerate(lines, 1):
-            if line.strip():
+            stripped = line.strip()
+            if stripped:
+                para_idx += 1
                 blocks.append(TextBlock(
-                    text=line,
+                    text=stripped,
                     line_start=i,
-                    line_end=i
+                    line_end=i,
+                    paragraph_index=para_idx,
+                    extra_meta={"paragraph": para_idx, "line": i}
                 ))
 
         title = os.path.splitext(filename)[0].replace("_", " ").replace("-", " ").title()
@@ -52,7 +59,7 @@ class TextParser(BaseParser):
             raw_text=text,
             blocks=blocks,
             mime_type="text/plain",
-            metadata={"filename": filename, "total_lines": len(lines)}
+            metadata={"filename": filename, "total_lines": len(lines), "total_paragraphs": para_idx}
         )
 
 
@@ -68,20 +75,52 @@ class PDFParser(BaseParser):
         if not title or not title.strip():
             title = os.path.splitext(filename)[0].replace("_", " ").replace("-", " ").title()
 
+        total_paragraphs = 0
         for page_idx in range(len(doc)):
             page = doc[page_idx]
             page_num = page_idx + 1
-            page_text = page.get_text("text")
+            page_width = round(page.rect.width, 2)
+            page_height = round(page.rect.height, 2)
 
+            page_text = page.get_text("text")
             if page_text and page_text.strip():
                 all_text_parts.append(page_text)
-                # Split into paragraphs to preserve reading blocks
+
+            # Extract structured blocks with bounding boxes: (x0, y0, x1, y1, "lines", block_no, block_type)
+            raw_blocks = page.get_text("blocks")
+            # Filter text blocks (block_type == 0)
+            text_blocks = [b for b in raw_blocks if len(b) >= 7 and b[6] == 0 and b[4].strip()]
+
+            if text_blocks:
+                for idx, b in enumerate(text_blocks):
+                    clean_text = b[4].strip()
+                    bbox = [round(b[0], 2), round(b[1], 2), round(b[2], 2), round(b[3], 2)]
+                    para_idx = idx + 1
+                    total_paragraphs += 1
+                    blocks.append(TextBlock(
+                        text=clean_text,
+                        page_number=page_num,
+                        paragraph_index=para_idx,
+                        bbox=bbox,
+                        extra_meta={
+                            "page": page_num,
+                            "paragraph": para_idx,
+                            "bbox": bbox,
+                            "page_width": page_width,
+                            "page_height": page_height
+                        }
+                    ))
+            elif page_text and page_text.strip():
+                # Fallback to paragraph splitting if raw blocks not available
                 paras = [p.strip() for p in page_text.split("\n\n") if p.strip()]
-                for para in paras:
+                for idx, para in enumerate(paras):
+                    para_idx = idx + 1
+                    total_paragraphs += 1
                     blocks.append(TextBlock(
                         text=para,
                         page_number=page_num,
-                        extra_meta={"page": page_num}
+                        paragraph_index=para_idx,
+                        extra_meta={"page": page_num, "paragraph": para_idx}
                     ))
 
         total_pages = len(doc)
@@ -93,7 +132,11 @@ class PDFParser(BaseParser):
             raw_text=raw_text,
             blocks=blocks,
             mime_type="application/pdf",
-            metadata={"filename": filename, "total_pages": total_pages}
+            metadata={
+                "filename": filename,
+                "total_pages": total_pages,
+                "total_paragraphs": total_paragraphs
+            }
         )
 
 
@@ -105,6 +148,7 @@ class DocxParser(BaseParser):
         blocks: List[TextBlock] = []
         all_text: List[str] = []
         current_section = "Introduction"
+        para_counter = 0
 
         for para in doc.paragraphs:
             text = para.text.strip()
@@ -116,11 +160,13 @@ class DocxParser(BaseParser):
                 current_section = text
                 continue
 
+            para_counter += 1
             all_text.append(text)
             blocks.append(TextBlock(
                 text=text,
+                paragraph_index=para_counter,
                 section_title=current_section,
-                extra_meta={"section": current_section}
+                extra_meta={"section": current_section, "paragraph": para_counter}
             ))
 
         # Also parse table cells if present
@@ -128,11 +174,13 @@ class DocxParser(BaseParser):
             for row in table.rows:
                 row_text = " | ".join([cell.text.strip() for cell in row.cells if cell.text.strip()])
                 if row_text:
+                    para_counter += 1
                     all_text.append(row_text)
                     blocks.append(TextBlock(
                         text=row_text,
+                        paragraph_index=para_counter,
                         section_title=current_section,
-                        extra_meta={"is_table": True}
+                        extra_meta={"is_table": True, "paragraph": para_counter}
                     ))
 
         raw_text = "\n\n".join(all_text)

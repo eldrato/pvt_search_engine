@@ -1,5 +1,7 @@
+import os
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status, Query
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status, Query, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
@@ -8,6 +10,7 @@ from app.core.db import get_async_session
 from app.models.document import Document, DocumentChunk
 from app.services.ingestion import ingestion_service
 from app.services.opensearch import opensearch_service
+from app.services.document_intelligence import document_intelligence_service
 from app.core.logging import logger
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
@@ -184,8 +187,118 @@ async def delete_document(
     # Wipe from OpenSearch
     opensearch_service.delete_document_chunks(doc_id)
 
+    # Clean up file on disk if exists
+    if doc.file_path and os.path.isfile(doc.file_path):
+        try:
+            os.remove(doc.file_path)
+        except Exception:
+            pass
+
     # Delete from DB (cascade deletes DocumentChunk)
     await db.delete(doc)
     await db.commit()
 
     return {"message": f"Document '{doc.title}' deleted successfully", "id": doc_id}
+
+
+@router.get("/{doc_id}/file")
+async def get_raw_document_file(
+    doc_id: str,
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Stream or download the original raw document file (PDF, code, docx, markdown, text).
+    Supports browser inline viewing (e.g. native PDF viewer).
+    """
+    file_path, file_bytes, filename, mime_type = await document_intelligence_service.get_document_file(doc_id, db)
+
+    if file_path and os.path.isfile(file_path):
+        return FileResponse(
+            path=file_path,
+            filename=filename,
+            media_type=mime_type,
+            content_disposition_type="inline"
+        )
+    elif file_bytes:
+        return Response(
+            content=file_bytes,
+            media_type=mime_type,
+            headers={"Content-Disposition": f'inline; filename="{filename}"'}
+        )
+    else:
+        raise HTTPException(status_code=404, detail="File content not found")
+
+
+@router.get("/{doc_id}/pdf/page/{page_number}")
+async def get_pdf_page_image(
+    doc_id: str,
+    page_number: int,
+    highlight_query: Optional[str] = Query(None, description="Search terms to highlight visually on page"),
+    highlight_chunk: Optional[int] = Query(None, description="Chunk index to highlight bounding boxes/text"),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Render a specific page of a PDF document as a crisp PNG image with optional
+    visual highlights (amber/yellow) over search query matches or chunk bounding boxes.
+    """
+    png_bytes = await document_intelligence_service.render_pdf_page(
+        doc_id=doc_id,
+        page_number=page_number,
+        highlight_query=highlight_query,
+        highlight_chunk_index=highlight_chunk,
+        db=db
+    )
+    return Response(
+        content=png_bytes,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=60"}
+    )
+
+
+@router.get("/{doc_id}/pdf/highlighted")
+async def get_highlighted_pdf(
+    doc_id: str,
+    highlight_query: Optional[str] = Query(None, description="Search query to highlight"),
+    highlight_chunk: Optional[int] = Query(None, description="Specific chunk index to highlight"),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Generate and stream a copy of the PDF document with standard PDF highlight annotations
+    applied across all matching pages and chunks.
+    """
+    pdf_bytes = await document_intelligence_service.get_annotated_pdf(
+        doc_id=doc_id,
+        highlight_query=highlight_query,
+        highlight_chunk_index=highlight_chunk,
+        db=db
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="highlighted_{doc_id}.pdf"'}
+    )
+
+
+@router.get("/{doc_id}/locations")
+async def get_document_locations(
+    doc_id: str,
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Retrieve structural map of document: total pages, paragraphs, lines, and all chunk anchors.
+    """
+    return await document_intelligence_service.get_document_locations(doc_id, db)
+
+
+@router.get("/{doc_id}/location/{chunk_index}")
+async def get_chunk_location_context(
+    doc_id: str,
+    chunk_index: int,
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Retrieve exact location intelligence for a specific chunk, including previous and next chunk
+    for surrounding reading context.
+    """
+    return await document_intelligence_service.get_chunk_location_context(doc_id, chunk_index, db)
+

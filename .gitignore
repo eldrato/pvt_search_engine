@@ -50,4 +50,5 @@ qdrant_data/
 redis_data/
 ollama_data/
 aegis_qdrant_storage/
+storage/
 

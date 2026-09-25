@@ -37,6 +37,8 @@ class Chunker:
         current_text_parts: List[str] = []
         current_len = 0
         current_pages: set = set()
+        current_paragraphs: set = set()
+        current_bboxes: List[List[float]] = []
         min_line: Optional[int] = None
         max_line: Optional[int] = None
         sections: set = set()
@@ -52,6 +54,10 @@ class Chunker:
             # Update locators
             if block.page_number:
                 current_pages.add(block.page_number)
+            if block.paragraph_index is not None:
+                current_paragraphs.add(block.paragraph_index)
+            if block.bbox:
+                current_bboxes.append(block.bbox)
             if block.line_start is not None:
                 min_line = block.line_start if min_line is None else min(min_line, block.line_start)
             if block.line_end is not None:
@@ -70,6 +76,8 @@ class Chunker:
                     chunk_index=chunk_index,
                     text=chunk_text,
                     pages=current_pages,
+                    paragraphs=current_paragraphs,
+                    bboxes=current_bboxes,
                     min_line=min_line,
                     max_line=max_line,
                     sections=sections,
@@ -87,6 +95,8 @@ class Chunker:
                     current_len = 0
 
                 current_pages = set()
+                current_paragraphs = set()
+                current_bboxes = []
                 min_line = None
                 max_line = None
                 sections = set()
@@ -100,6 +110,8 @@ class Chunker:
                     chunk_index=chunk_index,
                     text=chunk_text,
                     pages=current_pages,
+                    paragraphs=current_paragraphs,
+                    bboxes=current_bboxes,
                     min_line=min_line,
                     max_line=max_line,
                     sections=sections,
@@ -120,6 +132,8 @@ class Chunker:
                     chunk_index=idx,
                     text=sub,
                     pages=set(),
+                    paragraphs=set(),
+                    bboxes=[],
                     min_line=None,
                     max_line=None,
                     sections=set(),
@@ -134,6 +148,8 @@ class Chunker:
         chunk_index: int,
         text: str,
         pages: set,
+        paragraphs: set,
+        bboxes: List[List[float]],
         min_line: Optional[int],
         max_line: Optional[int],
         sections: set,
@@ -144,12 +160,19 @@ class Chunker:
         words = text.split()
         token_count = max(1, int(len(text) / 4))
 
-        # Build human-readable anchor
+        # Build human-readable anchor with exact precision
         anchor_parts = []
         if pages:
             sorted_pages = sorted(list(pages))
             if len(sorted_pages) == 1:
-                anchor_parts.append(f"Page {sorted_pages[0]}")
+                if paragraphs:
+                    sorted_paras = sorted(list(paragraphs))
+                    if len(sorted_paras) == 1:
+                        anchor_parts.append(f"Page {sorted_pages[0]}, ¶{sorted_paras[0]}")
+                    else:
+                        anchor_parts.append(f"Page {sorted_pages[0]}, ¶{sorted_paras[0]}-{sorted_paras[-1]}")
+                else:
+                    anchor_parts.append(f"Page {sorted_pages[0]}")
             else:
                 anchor_parts.append(f"Pages {sorted_pages[0]}-{sorted_pages[-1]}")
         elif min_line is not None and max_line is not None:
@@ -157,17 +180,37 @@ class Chunker:
                 anchor_parts.append(f"{filename}:{min_line}-{max_line}")
             else:
                 anchor_parts.append(f"Lines {min_line}-{max_line}")
+            if sections:
+                anchor_parts.append(f"Section: {list(sections)[0]}")
         elif sections:
-            anchor_parts.append(f"Section: {list(sections)[0]}")
+            sec_title = list(sections)[0]
+            if paragraphs:
+                sorted_paras = sorted(list(paragraphs))
+                anchor_parts.append(f"Section: {sec_title} • ¶{sorted_paras[0]}")
+            else:
+                anchor_parts.append(f"Section: {sec_title}")
+        elif paragraphs:
+            sorted_paras = sorted(list(paragraphs))
+            if len(sorted_paras) == 1:
+                anchor_parts.append(f"¶{sorted_paras[0]}")
+            else:
+                anchor_parts.append(f"¶{sorted_paras[0]}-{sorted_paras[-1]}")
 
         anchor_label = " • ".join(anchor_parts) if anchor_parts else f"Chunk #{chunk_index + 1}"
 
         loc_meta = {
             "pages": sorted(list(pages)) if pages else [],
+            "page_start": min(pages) if pages else None,
+            "page_end": max(pages) if pages else None,
+            "paragraphs": sorted(list(paragraphs)) if paragraphs else [],
+            "paragraph_start": min(paragraphs) if paragraphs else None,
+            "paragraph_end": max(paragraphs) if paragraphs else None,
+            "bboxes": bboxes,
             "line_start": min_line,
             "line_end": max_line,
             "sections": list(sections),
             "anchor_label": anchor_label,
+            "filename": filename,
             **extra_meta
         }
 

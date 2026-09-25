@@ -30,7 +30,16 @@ import {
   Globe,
   Link2,
   Play,
-  StopCircle
+  StopCircle,
+  Eye,
+  ZoomIn,
+  ZoomOut,
+  Download,
+  ChevronLeft,
+  BookOpen,
+  Maximize2,
+  Copy,
+  Check
 } from 'lucide-react';
 
 interface ServiceHealth {
@@ -149,6 +158,100 @@ export default function AegisDashboard() {
   const [hasSearched, setHasSearched] = useState<boolean>(false);
   const [selectedChunk, setSelectedChunk] = useState<SearchHit | null>(null);
   const [expandedBreakdowns, setExpandedBreakdowns] = useState<Record<string, boolean>>({});
+
+  // Phase 5: Document Intelligence & Inline PDF Highlighter state
+  const [docIntelTab, setDocIntelTab] = useState<'evidence' | 'pdf' | 'code' | 'signals'>('evidence');
+  const [pdfPage, setPdfPage] = useState<number>(1);
+  const [pdfTotalPages, setPdfTotalPages] = useState<number>(1);
+  const [pdfZoom, setPdfZoom] = useState<number>(100);
+  const [pdfHighlightQuery, setPdfHighlightQuery] = useState<boolean>(true);
+  const [pdfHighlightChunk, setPdfHighlightChunk] = useState<boolean>(true);
+  const [pdfViewMode, setPdfViewMode] = useState<'image' | 'embed'>('image');
+  const [pdfPageLoading, setPdfPageLoading] = useState<boolean>(false);
+  const [chunkContextData, setChunkContextData] = useState<any>(null);
+  const [loadingContext, setLoadingContext] = useState<boolean>(false);
+  const [copiedSnippet, setCopiedSnippet] = useState<boolean>(false);
+
+  const fetchChunkContext = async (docId: string, chunkIndex: number) => {
+    setLoadingContext(true);
+    try {
+      const res = await fetch(`${API_BASE}/documents/${docId}/location/${chunkIndex}`);
+      if (res.ok) {
+        const data = await res.json();
+        setChunkContextData(data);
+        if (data.total_pages) {
+          setPdfTotalPages(data.total_pages);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load chunk context:', e);
+    } finally {
+      setLoadingContext(false);
+    }
+  };
+
+  const handleOpenChunk = (hit: SearchHit, preferredTab?: 'evidence' | 'pdf' | 'code' | 'signals') => {
+    setSelectedChunk(hit);
+    const isPdf = hit.mime_type === 'application/pdf' || hit.location_meta?.filename?.endsWith('.pdf') || hit.location_meta?.pages?.length > 0;
+    const isCode = hit.source_type === 'code' || hit.mime_type?.includes('code') || hit.location_meta?.language;
+    const initialPage = hit.location_meta?.page_start || hit.location_meta?.pages?.[0] || 1;
+    setPdfPage(initialPage);
+    setPdfZoom(100);
+    setPdfPageLoading(false);
+
+    if (preferredTab) {
+      setDocIntelTab(preferredTab);
+    } else if (isPdf) {
+      setDocIntelTab('pdf');
+    } else if (isCode) {
+      setDocIntelTab('code');
+    } else {
+      setDocIntelTab('evidence');
+    }
+
+    fetchChunkContext(hit.document_id, hit.chunk_index);
+  };
+
+  const handleCopySnippet = (text: string) => {
+    if (navigator?.clipboard) {
+      navigator.clipboard.writeText(text);
+      setCopiedSnippet(true);
+      setTimeout(() => setCopiedSnippet(false), 2000);
+    }
+  };
+
+  const openDocumentInDrawer = async (docId: string, title: string, mimeType: string, sourceType: string) => {
+    setIsLibraryOpen(false);
+    try {
+      const res = await fetch(`${API_BASE}/documents/${docId}`);
+      if (res.ok) {
+        const data = await res.json();
+        const firstChunk = data.chunks?.[0] || {
+          id: `${docId}_0`,
+          chunk_index: 0,
+          content: data.raw_content || 'No text extracted',
+          location_meta: { pages: [1], page_start: 1 }
+        };
+        const mockHit: SearchHit = {
+          chunk_id: firstChunk.id,
+          document_id: docId,
+          title: title,
+          snippet: firstChunk.content?.slice(0, 150) || '',
+          content: firstChunk.content || '',
+          score: 1.0,
+          source_type: sourceType,
+          mime_type: mimeType,
+          anchor_label: firstChunk.location_meta?.anchor_label || (firstChunk.location_meta?.pages?.length ? `Page ${firstChunk.location_meta.pages[0]}` : 'Chunk #1'),
+          chunk_index: firstChunk.chunk_index || 0,
+          location_meta: firstChunk.location_meta || {},
+          created_at: data.created_at
+        };
+        handleOpenChunk(mockHit);
+      }
+    } catch (e) {
+      console.error('Failed to open document:', e);
+    }
+  };
 
   const toggleBreakdown = (chunkId: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -736,7 +839,7 @@ export default function AegisDashboard() {
             {searchResponse.results.map((hit) => (
               <div
                 key={hit.chunk_id}
-                onClick={() => setSelectedChunk(hit)}
+                onClick={() => handleOpenChunk(hit)}
                 className="glass-card p-5 rounded-xl cursor-pointer border border-slate-800/80 hover:border-indigo-500/50 flex flex-col gap-2.5 group"
               >
                 <div className="flex items-start justify-between gap-3">
@@ -783,6 +886,35 @@ export default function AegisDashboard() {
                     <span className="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/20 text-indigo-300">
                       {hit.anchor_label}
                     </span>
+
+                    {/* Document Intelligence Quick Action Pill */}
+                    {(hit.mime_type === 'application/pdf' || hit.location_meta?.filename?.endsWith('.pdf') || hit.location_meta?.pages?.length > 0) ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleOpenChunk(hit, 'pdf');
+                        }}
+                        className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/35 text-emerald-300 hover:bg-emerald-500/25 transition-colors"
+                        title="Open Inline PDF Highlighter"
+                      >
+                        <Eye className="w-3 h-3 text-emerald-400" />
+                        <span>PDF Page {hit.location_meta?.page_start || hit.location_meta?.pages?.[0] || 1}</span>
+                      </button>
+                    ) : (hit.source_type === 'code' || hit.mime_type?.includes('code') || hit.location_meta?.language) ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleOpenChunk(hit, 'code');
+                        }}
+                        className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-500/15 border border-cyan-500/35 text-cyan-300 hover:bg-cyan-500/25 transition-colors"
+                        title="Open Code Line Inspector"
+                      >
+                        <FileCode className="w-3 h-3 text-cyan-400" />
+                        <span>Lines {hit.location_meta?.line_start || 1}-{hit.location_meta?.line_end || 40}</span>
+                      </button>
+                    ) : null}
 
                     {/* Multi-Signal Composite Score with 'Why?' Toggle */}
                     <button
@@ -1096,13 +1228,13 @@ export default function AegisDashboard() {
                   <span className="text-slate-300">Phase 3: Multi-Signal Ranking</span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-mono">DONE</span>
                 </div>
-                <div className="p-2.5 rounded-lg bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-between">
-                  <span className="text-white font-medium">Phase 4: Semantic Vectors & Evaluation</span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/40 text-indigo-200 font-mono">ACTIVE</span>
+                <div className="p-2.5 rounded-lg bg-slate-900/60 border border-emerald-500/30 flex items-center justify-between">
+                  <span className="text-slate-300">Phase 4: Semantic Vectors & Evaluation</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-mono">DONE</span>
                 </div>
-                <div className="p-2.5 rounded-lg bg-slate-900/40 border border-slate-800 flex items-center justify-between opacity-60">
-                  <span className="text-slate-400">Phase 5: Document Intelligence</span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-500 font-mono">NEXT</span>
+                <div className="p-2.5 rounded-lg bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-between">
+                  <span className="text-white font-medium">Phase 5: Document Intelligence</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/40 text-indigo-200 font-mono">ACTIVE</span>
                 </div>
               </div>
             </div>
@@ -1112,105 +1244,602 @@ export default function AegisDashboard() {
 
       </div>
 
-      {/* Chunk Detail Drawer */}
+      {/* Document Intelligence & Inline PDF Highlighter Workspace */}
       {selectedChunk && (
-        <div className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm">
-          <div className="w-full max-w-lg bg-[#0d1322] border-l border-slate-800 h-full p-6 flex flex-col gap-4 overflow-y-auto shadow-2xl">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-              <div className="flex items-center gap-2">
-                {getSourceIcon(selectedChunk.mime_type, selectedChunk.source_type)}
-                <h3 className="font-semibold text-base text-white truncate max-w-xs">
-                  {selectedChunk.title}
-                </h3>
+        <div className="fixed inset-0 z-50 flex justify-end bg-black/75 backdrop-blur-sm transition-opacity">
+          <div className="w-full max-w-4xl bg-[#090d16] border-l border-slate-800/90 h-full flex flex-col shadow-2xl overflow-hidden">
+            {/* Header */}
+            <div className="p-5 border-b border-slate-800/80 bg-slate-950/80 flex items-center justify-between gap-4 shrink-0">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="p-2.5 rounded-xl bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 shrink-0">
+                  {getSourceIcon(selectedChunk.mime_type, selectedChunk.source_type)}
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="font-bold text-base text-white truncate max-w-md">
+                      {selectedChunk.title}
+                    </h3>
+                    <span className="px-2.5 py-0.5 rounded bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 font-mono text-[11px]">
+                      {selectedChunk.anchor_label}
+                    </span>
+                    <span className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300 text-[10px] font-mono">
+                      Chunk #{selectedChunk.chunk_index + 1}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs text-slate-400 mt-1">
+                    <span className="font-mono text-[11px] text-slate-400">Score: <strong className="text-white">{selectedChunk.score}</strong></span>
+                    <span>•</span>
+                    <span className="text-[11px] text-slate-400">{selectedChunk.mime_type}</span>
+                    {selectedChunk.location_meta?.filename && (
+                      <>
+                        <span>•</span>
+                        <span className="font-mono text-[11px] text-indigo-300/80 truncate max-w-xs">{selectedChunk.location_meta.filename}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
               </div>
+
+              {/* Header Action Buttons */}
+              <div className="flex items-center gap-2 shrink-0">
+                <a
+                  href={`${API_BASE}/documents/${selectedChunk.document_id}/file`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1.5 border border-slate-700 transition-colors"
+                  title="Open or download original document file"
+                >
+                  <Download className="w-3.5 h-3.5 text-slate-300" />
+                  <span className="hidden sm:inline">Raw File</span>
+                </a>
+
+                {(selectedChunk.mime_type === 'application/pdf' || selectedChunk.location_meta?.filename?.endsWith('.pdf') || selectedChunk.location_meta?.pages?.length > 0) && (
+                  <a
+                    href={`${API_BASE}/documents/${selectedChunk.document_id}/pdf/highlighted?highlight_chunk=${selectedChunk.chunk_index}${query ? `&highlight_query=${encodeURIComponent(query)}` : ''}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 text-xs font-medium flex items-center gap-1.5 border border-emerald-500/30 transition-colors"
+                    title="Download annotated PDF with standard highlight annotations"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                    <span className="hidden sm:inline">Annotated PDF</span>
+                  </a>
+                )}
+
+                <button
+                  onClick={() => setSelectedChunk(null)}
+                  className="p-1.5 rounded-lg bg-slate-800/80 hover:bg-rose-500/20 text-slate-400 hover:text-rose-300 border border-slate-700 hover:border-rose-500/40 transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Document Intelligence Tabs Bar */}
+            <div className="flex border-b border-slate-800 bg-slate-950/60 px-5 gap-1 shrink-0 overflow-x-auto">
               <button
-                onClick={() => setSelectedChunk(null)}
-                className="p-1 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white"
+                onClick={() => setDocIntelTab('evidence')}
+                className={`py-2.5 px-4 text-xs font-semibold flex items-center gap-2 border-b-2 transition-all whitespace-nowrap ${
+                  docIntelTab === 'evidence'
+                    ? 'border-indigo-500 text-indigo-300 bg-indigo-500/5'
+                    : 'border-transparent text-slate-400 hover:text-slate-200'
+                }`}
               >
-                <X className="w-5 h-5" />
+                <BookOpen className="w-3.5 h-3.5" />
+                <span>Evidence & Context</span>
+              </button>
+
+              {(selectedChunk.mime_type === 'application/pdf' || selectedChunk.location_meta?.filename?.endsWith('.pdf') || selectedChunk.location_meta?.pages?.length > 0) && (
+                <button
+                  onClick={() => setDocIntelTab('pdf')}
+                  className={`py-2.5 px-4 text-xs font-semibold flex items-center gap-2 border-b-2 transition-all whitespace-nowrap ${
+                    docIntelTab === 'pdf'
+                      ? 'border-emerald-500 text-emerald-300 bg-emerald-500/5'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Eye className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Inline PDF Highlighter</span>
+                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-mono">
+                    P.{selectedChunk.location_meta?.page_start || selectedChunk.location_meta?.pages?.[0] || 1}
+                  </span>
+                </button>
+              )}
+
+              {(selectedChunk.source_type === 'code' || selectedChunk.mime_type?.includes('code') || selectedChunk.location_meta?.language) && (
+                <button
+                  onClick={() => setDocIntelTab('code')}
+                  className={`py-2.5 px-4 text-xs font-semibold flex items-center gap-2 border-b-2 transition-all whitespace-nowrap ${
+                    docIntelTab === 'code'
+                      ? 'border-cyan-500 text-cyan-300 bg-cyan-500/5'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <FileCode className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Code Inspector</span>
+                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 font-mono">
+                    L.{selectedChunk.location_meta?.line_start || 1}-{selectedChunk.location_meta?.line_end || 40}
+                  </span>
+                </button>
+              )}
+
+              <button
+                onClick={() => setDocIntelTab('signals')}
+                className={`py-2.5 px-4 text-xs font-semibold flex items-center gap-2 border-b-2 transition-all whitespace-nowrap ${
+                  docIntelTab === 'signals'
+                    ? 'border-purple-500 text-purple-300 bg-purple-500/5'
+                    : 'border-transparent text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                <span>Ranking Signals ("Why?")</span>
+                {selectedChunk.score_breakdown && (
+                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 font-mono">
+                    {selectedChunk.score_breakdown.final_score}
+                  </span>
+                )}
               </button>
             </div>
 
-            <div className="flex items-center gap-2 text-xs">
-              <span className="px-2.5 py-1 rounded bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 font-mono">
-                {selectedChunk.anchor_label}
-              </span>
-              <span className="px-2 py-1 rounded bg-slate-800 text-slate-300 text-[11px] font-mono">
-                Score: {selectedChunk.score}
-              </span>
-            </div>
+            {/* Scrollable Tab Content */}
+            <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-5">
+              {/* TAB 1: Evidence & Context */}
+              {docIntelTab === 'evidence' && (
+                <div className="flex flex-col gap-5">
+                  {/* Location Intelligence Grid */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col">
+                      <span className="text-[10px] text-slate-400 uppercase tracking-wider">Precision Anchor</span>
+                      <span className="text-white font-mono font-bold text-xs truncate mt-0.5">
+                        {selectedChunk.anchor_label}
+                      </span>
+                    </div>
 
-            {/* Ranking Signals Breakdown in Drawer */}
-            {selectedChunk.score_breakdown && (
-              <div className="bg-slate-950/70 p-4 rounded-xl border border-indigo-500/20 flex flex-col gap-3 text-xs">
-                <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
-                  <span className="font-semibold text-white flex items-center gap-1.5">
-                    <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                    Ranking Signals & Explainability
-                  </span>
-                  <span className="text-[11px] font-mono text-indigo-300 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20">
-                    Composite: {selectedChunk.score_breakdown.final_score}
-                  </span>
-                </div>
+                    <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col">
+                      <span className="text-[10px] text-slate-400 uppercase tracking-wider">
+                        {selectedChunk.location_meta?.pages?.length ? 'Page / Spread' : 'Lines'}
+                      </span>
+                      <span className="text-emerald-400 font-mono font-bold text-xs mt-0.5">
+                        {selectedChunk.location_meta?.pages?.length 
+                          ? `Page ${selectedChunk.location_meta.pages.join(', ')}`
+                          : selectedChunk.location_meta?.line_start
+                            ? `Lines ${selectedChunk.location_meta.line_start}-${selectedChunk.location_meta.line_end}`
+                            : 'N/A'
+                        }
+                      </span>
+                    </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 font-mono text-[11px]">
-                  <div className="p-2 rounded bg-slate-900 border border-slate-800 flex flex-col">
-                    <span className="text-[10px] text-slate-400 font-sans">Base BM25</span>
-                    <span className="text-white font-bold">{selectedChunk.score_breakdown.base_bm25}</span>
-                  </div>
-                  <div className="p-2 rounded bg-slate-900 border border-slate-800 flex flex-col">
-                    <span className="text-[10px] text-slate-400 font-sans">Title Boost</span>
-                    <span className="text-emerald-400 font-bold">{selectedChunk.score_breakdown.title_boost}x</span>
-                  </div>
-                  <div className="p-2 rounded bg-slate-900 border border-slate-800 flex flex-col">
-                    <span className="text-[10px] text-slate-400 font-sans">Authority</span>
-                    <span className="text-amber-400 font-bold">{selectedChunk.score_breakdown.authority_boost}x</span>
-                  </div>
-                  <div className="p-2 rounded bg-slate-900 border border-slate-800 flex flex-col">
-                    <span className="text-[10px] text-slate-400 font-sans">Freshness</span>
-                    <span className="text-cyan-400 font-bold">{selectedChunk.score_breakdown.freshness_boost}x</span>
-                  </div>
-                  <div className="p-2 rounded bg-slate-900 border border-slate-800 flex flex-col">
-                    <span className="text-[10px] text-slate-400 font-sans">Phrase Match</span>
-                    <span className="text-purple-400 font-bold">{selectedChunk.score_breakdown.phrase_boost}x</span>
-                  </div>
-                </div>
+                    <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col">
+                      <span className="text-[10px] text-slate-400 uppercase tracking-wider">Paragraph / Block</span>
+                      <span className="text-cyan-400 font-mono font-bold text-xs mt-0.5">
+                        {selectedChunk.location_meta?.paragraphs?.length 
+                          ? `¶ ${selectedChunk.location_meta.paragraphs.join(', ')}`
+                          : `Block #${selectedChunk.chunk_index + 1}`
+                        }
+                      </span>
+                    </div>
 
-                {selectedChunk.score_breakdown.explanation && (
-                  <div className="flex flex-col gap-1.5 pt-1">
-                    <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
-                      Signals
-                    </span>
-                    <div className="flex flex-col gap-1 text-[11px] text-slate-300">
-                      {selectedChunk.score_breakdown.explanation.map((item, idx) => (
-                        <div key={idx} className="flex items-start gap-1.5 bg-slate-900/40 p-2 rounded border border-slate-800/40">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                          <span>{item}</span>
-                        </div>
-                      ))}
+                    <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col">
+                      <span className="text-[10px] text-slate-400 uppercase tracking-wider">Estimated Tokens</span>
+                      <span className="text-indigo-400 font-mono font-bold text-xs mt-0.5">
+                        {selectedChunk.location_meta?.token_count || Math.round(selectedChunk.content.length / 4)} tokens
+                      </span>
                     </div>
                   </div>
-                )}
-              </div>
-            )}
 
-            <div className="flex flex-col gap-2">
-              <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                Full Chunk Content
-              </span>
-              <div className="bg-slate-950/80 p-4 rounded-xl border border-slate-800 text-xs text-slate-200 leading-relaxed font-mono whitespace-pre-wrap selection:bg-indigo-500 selection:text-white">
-                {selectedChunk.content}
-              </div>
+                  {/* Section Title banner if available */}
+                  {selectedChunk.location_meta?.sections?.length > 0 && (
+                    <div className="p-3 rounded-xl bg-indigo-950/30 border border-indigo-500/20 text-xs flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <BookOpen className="w-4 h-4 text-indigo-400" />
+                        <span className="text-slate-400">Document Section:</span>
+                        <strong className="text-indigo-200">{selectedChunk.location_meta.sections[0]}</strong>
+                      </div>
+                      <span className="text-[11px] text-slate-400 font-mono truncate max-w-xs">
+                        {selectedChunk.location_meta.filename || selectedChunk.title}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Reading Context Flow: Previous, Matched, and Next Chunk */}
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+                        <Layers className="w-3.5 h-3.5 text-indigo-400" />
+                        Surrounding Reading Context
+                      </span>
+                      {loadingContext && (
+                        <span className="text-[11px] text-indigo-300 flex items-center gap-1 font-mono">
+                          <RefreshCw className="w-3 h-3 animate-spin" />
+                          Loading Context...
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Previous Chunk Preview if exists */}
+                    {chunkContextData?.previous_chunk && (
+                      <div className="p-3.5 rounded-xl bg-slate-950/40 border border-slate-800/80 text-xs flex flex-col gap-1.5 opacity-80 hover:opacity-100 transition-opacity">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="text-slate-400 font-mono flex items-center gap-1">
+                            <ChevronLeft className="w-3 h-3 text-slate-500" />
+                            Previous: Chunk #{chunkContextData.previous_chunk.chunk_index + 1}
+                          </span>
+                          <span className="text-slate-400 font-mono">
+                            {chunkContextData.previous_chunk.anchor_label}
+                          </span>
+                        </div>
+                        <p className="text-slate-400 text-xs line-clamp-2 italic font-sans">
+                          "{chunkContextData.previous_chunk.content}"
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Current Matched Chunk (Highlight Centerpiece) */}
+                    <div className="p-4 rounded-xl bg-slate-950 border-2 border-indigo-500/40 flex flex-col gap-3 shadow-lg shadow-indigo-500/5">
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                          <span className="font-semibold text-xs text-white">
+                            Current Matched Span ({selectedChunk.anchor_label})
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleCopySnippet(selectedChunk.content)}
+                          className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[11px] text-slate-300 hover:text-white flex items-center gap-1 transition-colors"
+                        >
+                          {copiedSnippet ? (
+                            <>
+                              <Check className="w-3 h-3 text-emerald-400" />
+                              <span className="text-emerald-400 font-mono">Copied</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3 h-3 text-slate-400" />
+                              <span className="font-mono">Copy Text</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+
+                      <div className="text-xs text-slate-100 leading-relaxed font-mono whitespace-pre-wrap selection:bg-indigo-500 selection:text-white bg-slate-900/60 p-3.5 rounded-lg border border-slate-800/80">
+                        {selectedChunk.content}
+                      </div>
+
+                      <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono pt-1">
+                        <span>Characters: {selectedChunk.content.length}</span>
+                        <span>SHA256 Hash: {selectedChunk.chunk_id.slice(0, 16)}...</span>
+                      </div>
+                    </div>
+
+                    {/* Next Chunk Preview if exists */}
+                    {chunkContextData?.next_chunk && (
+                      <div className="p-3.5 rounded-xl bg-slate-950/40 border border-slate-800/80 text-xs flex flex-col gap-1.5 opacity-80 hover:opacity-100 transition-opacity">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="text-slate-400 font-mono flex items-center gap-1">
+                            Next: Chunk #{chunkContextData.next_chunk.chunk_index + 1}
+                            <ChevronRight className="w-3 h-3 text-slate-500" />
+                          </span>
+                          <span className="text-slate-400 font-mono">
+                            {chunkContextData.next_chunk.anchor_label}
+                          </span>
+                        </div>
+                        <p className="text-slate-400 text-xs line-clamp-2 italic font-sans">
+                          "{chunkContextData.next_chunk.content}"
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Anchor Metadata details */}
+                  {selectedChunk.location_meta && Object.keys(selectedChunk.location_meta).length > 0 && (
+                    <div className="flex flex-col gap-2 border-t border-slate-800 pt-3">
+                      <span className="text-xs font-semibold text-slate-400">Structured Anchor Metadata</span>
+                      <pre className="bg-slate-950/80 p-3.5 rounded-lg text-[11px] text-indigo-300 font-mono overflow-x-auto border border-slate-800">
+                        {JSON.stringify(selectedChunk.location_meta, null, 2)}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 2: Inline PDF Highlighter */}
+              {docIntelTab === 'pdf' && (
+                <div className="flex flex-col gap-4">
+                  {/* PDF Toolbar */}
+                  <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
+                    {/* Page Navigation */}
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={pdfPage <= 1}
+                        onClick={() => setPdfPage(p => Math.max(1, p - 1))}
+                        className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-300 transition-colors"
+                        title="Previous page"
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+
+                      <div className="flex items-center gap-1.5 font-mono text-xs">
+                        <span>Page</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={pdfTotalPages || 999}
+                          value={pdfPage}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value);
+                            if (!isNaN(val) && val >= 1) setPdfPage(val);
+                          }}
+                          className="w-12 px-2 py-1 bg-slate-950 border border-slate-700 rounded text-center text-white font-mono focus:border-indigo-500 focus:outline-none"
+                        />
+                        <span className="text-slate-400">of {pdfTotalPages || 1}</span>
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={pdfPage >= (pdfTotalPages || 1)}
+                        onClick={() => setPdfPage(p => p + 1)}
+                        className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-300 transition-colors"
+                        title="Next page"
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+
+                      {/* Jump to match button if on different page */}
+                      {selectedChunk.location_meta?.page_start && selectedChunk.location_meta.page_start !== pdfPage && (
+                        <button
+                          type="button"
+                          onClick={() => setPdfPage(selectedChunk.location_meta.page_start)}
+                          className="ml-2 px-2 py-1 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/30 text-[11px] font-mono transition-colors"
+                        >
+                          Jump to Match (P.{selectedChunk.location_meta.page_start})
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Highlighting Toggles */}
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-1.5 cursor-pointer text-slate-300 hover:text-white select-none">
+                        <input
+                          type="checkbox"
+                          checked={pdfHighlightChunk}
+                          onChange={(e) => setPdfHighlightChunk(e.target.checked)}
+                          className="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0"
+                        />
+                        <span className="text-[11px]">Highlight Chunk</span>
+                      </label>
+
+                      {query && (
+                        <label className="flex items-center gap-1.5 cursor-pointer text-slate-300 hover:text-white select-none">
+                          <input
+                            type="checkbox"
+                            checked={pdfHighlightQuery}
+                            onChange={(e) => setPdfHighlightQuery(e.target.checked)}
+                            className="rounded bg-slate-950 border-slate-700 text-yellow-500 focus:ring-0"
+                          />
+                          <span className="text-[11px]">Highlight Query</span>
+                        </label>
+                      )}
+                    </div>
+
+                    {/* Zoom & View Controls */}
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center rounded-lg bg-slate-950 border border-slate-800 p-0.5">
+                        <button
+                          type="button"
+                          onClick={() => setPdfZoom(z => Math.max(60, z - 20))}
+                          className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white"
+                          title="Zoom out"
+                        >
+                          <ZoomOut className="w-3.5 h-3.5" />
+                        </button>
+                        <span className="px-1.5 text-[10px] font-mono text-slate-300">{pdfZoom}%</span>
+                        <button
+                          type="button"
+                          onClick={() => setPdfZoom(z => Math.min(200, z + 20))}
+                          className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white"
+                          title="Zoom in"
+                        >
+                          <ZoomIn className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      <div className="flex rounded-lg bg-slate-950 border border-slate-800 p-0.5 text-[11px]">
+                        <button
+                          type="button"
+                          onClick={() => setPdfViewMode('image')}
+                          className={`px-2 py-0.5 rounded font-medium transition-all ${
+                            pdfViewMode === 'image' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          Canvas
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPdfViewMode('embed')}
+                          className={`px-2 py-0.5 rounded font-medium transition-all ${
+                            pdfViewMode === 'embed' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          Native Embed
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Viewer Canvas Area */}
+                  {pdfViewMode === 'image' ? (
+                    <div className="flex flex-col items-center bg-[#070a12] p-4 rounded-2xl border border-slate-800/80 min-h-[500px] overflow-auto relative">
+                      {pdfPageLoading && (
+                        <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/50 backdrop-blur-sm rounded-2xl">
+                          <div className="flex items-center gap-2 bg-slate-900 border border-indigo-500/40 px-4 py-2 rounded-xl text-xs text-indigo-300 font-mono">
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+                            Rendering High-Res Page {pdfPage}...
+                          </div>
+                        </div>
+                      )}
+
+                      <div 
+                        style={{ width: `${pdfZoom}%`, maxWidth: '100%' }}
+                        className="transition-all duration-150 flex flex-col items-center"
+                      >
+                        <img
+                          key={`pdf_${selectedChunk.document_id}_${pdfPage}_${pdfHighlightChunk}_${pdfHighlightQuery}`}
+                          src={`${API_BASE}/documents/${selectedChunk.document_id}/pdf/page/${pdfPage}?${
+                            pdfHighlightChunk ? `highlight_chunk=${selectedChunk.chunk_index}&` : ''
+                          }${
+                            pdfHighlightQuery && query ? `highlight_query=${encodeURIComponent(query)}&` : ''
+                          }t=${selectedChunk.document_id}_${pdfPage}`}
+                          alt={`PDF Page ${pdfPage}`}
+                          onLoad={() => setPdfPageLoading(false)}
+                          className="w-full h-auto rounded-lg shadow-2xl border border-slate-700 bg-white"
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="w-full h-[650px] rounded-xl overflow-hidden border border-slate-800 bg-slate-950">
+                      <iframe
+                        src={`${API_BASE}/documents/${selectedChunk.document_id}/file#page=${pdfPage}`}
+                        className="w-full h-full"
+                        title={`PDF Document ${selectedChunk.title}`}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 3: Code Inspector */}
+              {docIntelTab === 'code' && (
+                <div className="flex flex-col gap-4">
+                  <div className="p-3 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-2">
+                      <FileCode className="w-4 h-4 text-cyan-400" />
+                      <span className="font-mono text-cyan-300 font-semibold">
+                        {selectedChunk.location_meta?.filename || selectedChunk.title}
+                      </span>
+                      {selectedChunk.location_meta?.language && (
+                        <span className="px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-mono text-[10px]">
+                          {selectedChunk.location_meta.language}
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleCopySnippet(selectedChunk.content)}
+                      className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-mono flex items-center gap-1.5 transition-colors"
+                    >
+                      {copiedSnippet ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          <span className="text-emerald-400">Copied</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5 text-slate-400" />
+                          <span>Copy Snippet</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {/* Formatted Line-Numbered Code Block */}
+                  <div className="bg-[#050811] rounded-xl border border-slate-800 overflow-hidden font-mono text-xs">
+                    <div className="p-2 border-b border-slate-800/80 bg-slate-950/80 text-[11px] text-slate-400 flex items-center justify-between px-4">
+                      <span>Source Lines {selectedChunk.location_meta?.line_start || 1} to {selectedChunk.location_meta?.line_end || 40}</span>
+                      <span>UTF-8</span>
+                    </div>
+
+                    <div className="p-4 overflow-x-auto flex">
+                      {/* Line Number Gutter */}
+                      <div className="select-none text-slate-600 text-right pr-4 border-r border-slate-800/80 shrink-0 font-mono">
+                        {selectedChunk.content.split('\n').map((_, idx) => {
+                          const lineNum = (selectedChunk.location_meta?.line_start || 1) + idx;
+                          return <div key={idx} className="leading-6">{lineNum}</div>;
+                        })}
+                      </div>
+
+                      {/* Code Content */}
+                      <div className="pl-4 text-slate-200 leading-6 whitespace-pre font-mono flex-1">
+                        {selectedChunk.content.split('\n').map((line, idx) => (
+                          <div key={idx} className="hover:bg-indigo-500/10 rounded px-1 transition-colors">
+                            {line || ' '}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 4: Ranking Signals ("Why this result?") */}
+              {docIntelTab === 'signals' && (
+                <div className="flex flex-col gap-4">
+                  {selectedChunk.score_breakdown ? (
+                    <div className="bg-slate-950/70 p-5 rounded-2xl border border-indigo-500/20 flex flex-col gap-4 text-xs">
+                      <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
+                        <span className="font-semibold text-white text-sm flex items-center gap-1.5">
+                          <Sparkles className="w-4 h-4 text-indigo-400" />
+                          Ranking Signals & Explainability
+                        </span>
+                        <span className="text-xs font-mono text-indigo-300 bg-indigo-500/15 px-3 py-1 rounded-full border border-indigo-500/30">
+                          Composite Score: <strong className="text-white">{selectedChunk.score_breakdown.final_score}</strong>
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 font-mono text-xs">
+                        <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex flex-col">
+                          <span className="text-[10px] text-slate-400 font-sans">Base BM25</span>
+                          <span className="text-white font-bold text-sm mt-0.5">{selectedChunk.score_breakdown.base_bm25}</span>
+                        </div>
+                        <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex flex-col">
+                          <span className="text-[10px] text-slate-400 font-sans">Title Boost</span>
+                          <span className="text-emerald-400 font-bold text-sm mt-0.5">{selectedChunk.score_breakdown.title_boost}x</span>
+                        </div>
+                        <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex flex-col">
+                          <span className="text-[10px] text-slate-400 font-sans">Authority Boost</span>
+                          <span className="text-amber-400 font-bold text-sm mt-0.5">{selectedChunk.score_breakdown.authority_boost}x</span>
+                        </div>
+                        <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex flex-col">
+                          <span className="text-[10px] text-slate-400 font-sans">Freshness Boost</span>
+                          <span className="text-cyan-400 font-bold text-sm mt-0.5">{selectedChunk.score_breakdown.freshness_boost}x</span>
+                        </div>
+                        <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex flex-col">
+                          <span className="text-[10px] text-slate-400 font-sans">Phrase Match</span>
+                          <span className="text-purple-400 font-bold text-sm mt-0.5">{selectedChunk.score_breakdown.phrase_boost}x</span>
+                        </div>
+                        {selectedChunk.score_breakdown.rrf_score && (
+                          <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex flex-col">
+                            <span className="text-[10px] text-slate-400 font-sans">RRF Fused Score</span>
+                            <span className="text-indigo-400 font-bold text-sm mt-0.5">{selectedChunk.score_breakdown.rrf_score.toFixed(4)}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {selectedChunk.score_breakdown.explanation && (
+                        <div className="flex flex-col gap-2 pt-2">
+                          <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                            Signal Explanations
+                          </span>
+                          <div className="flex flex-col gap-1.5 text-xs text-slate-300">
+                            {selectedChunk.score_breakdown.explanation.map((item, idx) => (
+                              <div key={idx} className="flex items-start gap-2 bg-slate-900/50 p-2.5 rounded-lg border border-slate-800/50">
+                                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                                <span>{item}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="p-8 text-center text-slate-400 text-xs">
+                      No explicit ranking score breakdown available for this chunk.
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-
-            {selectedChunk.location_meta && Object.keys(selectedChunk.location_meta).length > 0 && (
-              <div className="flex flex-col gap-2 border-t border-slate-800 pt-3">
-                <span className="text-xs font-semibold text-slate-400">Anchor Metadata</span>
-                <pre className="bg-slate-950/60 p-3 rounded-lg text-[11px] text-indigo-300/80 font-mono overflow-x-auto">
-                  {JSON.stringify(selectedChunk.location_meta, null, 2)}
-                </pre>
-              </div>
-            )}
           </div>
         </div>
       )}
@@ -1421,13 +2050,33 @@ export default function AegisDashboard() {
                       </div>
                     </div>
 
-                    <button
-                      onClick={() => handleDeleteDocument(doc.id, doc.title)}
-                      className="p-2 text-slate-500 hover:text-rose-400 rounded-lg hover:bg-rose-500/10 transition-colors"
-                      title="Delete from SSOT and OpenSearch"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        onClick={() => openDocumentInDrawer(doc.id, doc.title, doc.mime_type, doc.source_type)}
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 text-xs border border-indigo-500/30 transition-colors"
+                        title="Inspect in Document Intelligence Workspace"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>Inspect</span>
+                      </button>
+                      <a
+                        href={`${API_BASE}/documents/${doc.id}/file`}
+                        download={doc.title}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="p-2 text-slate-400 hover:text-cyan-300 rounded-lg hover:bg-cyan-500/10 transition-colors"
+                        title="Download raw document file"
+                      >
+                        <Download className="w-4 h-4" />
+                      </a>
+                      <button
+                        onClick={() => handleDeleteDocument(doc.id, doc.title)}
+                        className="p-2 text-slate-500 hover:text-rose-400 rounded-lg hover:bg-rose-500/10 transition-colors"
+                        title="Delete from SSOT and OpenSearch"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                 ))
               )}

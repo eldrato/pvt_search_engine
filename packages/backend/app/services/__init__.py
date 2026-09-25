@@ -4,6 +4,7 @@ from app.services.search import search_service
 from app.services.web_search import web_search_service
 from app.services.embedding import embedding_service
 from app.services.qdrant import qdrant_service
+from app.services.document_intelligence import document_intelligence_service
 
 __all__ = [
     "opensearch_service",
@@ -12,4 +13,5 @@ __all__ = [
     "web_search_service",
     "embedding_service",
     "qdrant_service",
+    "document_intelligence_service",
 ]
