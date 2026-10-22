@@ -8,6 +8,7 @@ from app.models.document import Document, DocumentChunk
 from app.services.opensearch import opensearch_service
 from app.services.embedding import embedding_service
 from app.services.qdrant import qdrant_service
+from app.services.source_manager import source_manager
 from app.ranking.scorer import ranking_scorer
 from app.core.logging import logger
 
@@ -22,6 +23,7 @@ class SearchService:
     - Hybrid Fusion: Reciprocal Rank Fusion (RRF) of BM25 + Dense Vectors + Multi-Signal Ranking
     - Lexical: OpenSearch BM25 with Database Lexical Fallback
     - Semantic: FastEmbed ONNX local dense embeddings with Qdrant ANN cosine retrieval
+    - Privacy Tiers (Public/Private/Sensitive) and Per-Source toggles (Phase 6)
     """
 
     async def search(
@@ -29,6 +31,8 @@ class SearchService:
         query: str,
         mode: str = "hybrid",
         source_type: Optional[str] = None,
+        privacy_tier: Optional[str] = None,
+        include_sensitive: bool = True,
         limit: int = 20,
         offset: int = 0,
         db: Optional[AsyncSession] = None
@@ -47,13 +51,61 @@ class SearchService:
         mode = (mode or "hybrid").lower()
         candidate_limit = max(limit * 3, 50)
 
+        # Resolve allowed sources based on per-source toggles (Phase 6)
+        if source_type:
+            allowed_sources = [source_type]
+        else:
+            allowed_sources = await source_manager.get_enabled_source_types(db)
+
+        # Resolve allowed privacy tiers (Phase 6)
+        if privacy_tier:
+            allowed_privacy_tiers = [privacy_tier.lower()]
+        elif not include_sensitive:
+            allowed_privacy_tiers = ["public", "private"]
+        else:
+            allowed_privacy_tiers = ["public", "private", "sensitive"]
+
+        def _filter_privacy_and_source(items):
+            filtered = []
+            for item in items:
+                item_tier = (item.get("privacy_tier") or "private").lower()
+                if allowed_privacy_tiers and item_tier not in allowed_privacy_tiers:
+                    continue
+                item_src = item.get("source_type")
+                if allowed_sources and item_src not in allowed_sources:
+                    continue
+                filtered.append(item)
+            return filtered
+
+        async def _verify_with_ssot(items):
+            if not db or not items:
+                return items
+            doc_ids = list({c.get("document_id") for c in items if c.get("document_id")})
+            if not doc_ids:
+                return items
+            stmt = select(Document.id, Document.privacy_tier, Document.source_type).where(Document.id.in_(doc_ids))
+            res = await db.execute(stmt)
+            valid_docs = {row[0]: (row[1], row[2]) for row in res.all()}
+            verified = []
+            for c in items:
+                did = c.get("document_id")
+                if did in valid_docs:
+                    c["privacy_tier"] = valid_docs[did][0] or "private"
+                    c["source_type"] = valid_docs[did][1]
+                    verified.append(c)
+            return verified
+
         if mode == "lexical":
             candidates, engine_name = await self._search_lexical(
                 query=query,
                 source_type=source_type,
+                allowed_sources=allowed_sources,
+                allowed_privacy_tiers=allowed_privacy_tiers,
                 limit=candidate_limit,
                 db=db
             )
+            candidates = await _verify_with_ssot(candidates)
+            candidates = _filter_privacy_and_source(candidates)
             # Mark lexical ranks
             for idx, c in enumerate(candidates):
                 c["lexical_rank"] = idx + 1
@@ -64,8 +116,12 @@ class SearchService:
             candidates = await self._search_semantic(
                 query=query,
                 source_type=source_type,
+                allowed_sources=allowed_sources,
+                allowed_privacy_tiers=allowed_privacy_tiers,
                 limit=candidate_limit
             )
+            candidates = await _verify_with_ssot(candidates)
+            candidates = _filter_privacy_and_source(candidates)
             # Mark semantic ranks
             for idx, c in enumerate(candidates):
                 c["semantic_rank"] = idx + 1
@@ -76,17 +132,25 @@ class SearchService:
             lexical_hits, _ = await self._search_lexical(
                 query=query,
                 source_type=source_type,
+                allowed_sources=allowed_sources,
+                allowed_privacy_tiers=allowed_privacy_tiers,
                 limit=candidate_limit,
                 db=db
             )
             semantic_hits = await self._search_semantic(
                 query=query,
                 source_type=source_type,
+                allowed_sources=allowed_sources,
+                allowed_privacy_tiers=allowed_privacy_tiers,
                 limit=candidate_limit
             )
 
+            lexical_hits = await _verify_with_ssot(lexical_hits)
+            semantic_hits = await _verify_with_ssot(semantic_hits)
+
             # Apply Reciprocal Rank Fusion
             fused_candidates = self._fuse_rrf(lexical_hits, semantic_hits)
+            fused_candidates = _filter_privacy_and_source(fused_candidates)
             reranked = ranking_scorer.rerank(query, fused_candidates)
             engine = "hybrid_rrf_multi_signal"
 
@@ -105,14 +169,18 @@ class SearchService:
         self,
         query: str,
         source_type: Optional[str] = None,
+        allowed_sources: Optional[List[str]] = None,
+        allowed_privacy_tiers: Optional[List[str]] = None,
         limit: int = 50,
         db: Optional[AsyncSession] = None
     ) -> tuple[List[Dict[str, Any]], str]:
-        """Performs lexical search via OpenSearch BM25 or DB SQL fallback."""
+        """Performs lexical search via OpenSearch BM25 or DB SQL fallback with privacy and source filters."""
         if opensearch_service.is_connected():
             os_result = opensearch_service.search(
                 query_text=query,
                 source_type=source_type,
+                allowed_sources=allowed_sources,
+                allowed_privacy_tiers=allowed_privacy_tiers,
                 limit=limit,
                 offset=0
             )
@@ -140,6 +208,11 @@ class SearchService:
         )
         if source_type:
             stmt = stmt.where(Document.source_type == source_type)
+        elif allowed_sources:
+            stmt = stmt.where(Document.source_type.in_(allowed_sources))
+
+        if allowed_privacy_tiers:
+            stmt = stmt.where(Document.privacy_tier.in_(allowed_privacy_tiers))
 
         res = await db.execute(stmt)
         rows = res.all()
@@ -160,13 +233,15 @@ class SearchService:
             anchor_label = loc_meta.get("anchor_label", f"Chunk #{chunk.chunk_index + 1}")
 
             scored_results.append({
-                "chunk_id": chunk.id,
+                "chunk_id": f"{doc.id}_{chunk.chunk_index}",
+                "raw_chunk_id": chunk.id,
                 "document_id": doc.id,
                 "title": doc.title,
                 "snippet": snippet,
                 "content": chunk.content,
                 "score": round(max(0.5, score), 3),
                 "source_type": doc.source_type,
+                "privacy_tier": getattr(doc, "privacy_tier", "private") or "private",
                 "mime_type": doc.mime_type,
                 "anchor_label": anchor_label,
                 "chunk_index": chunk.chunk_index,
@@ -182,9 +257,11 @@ class SearchService:
         self,
         query: str,
         source_type: Optional[str] = None,
+        allowed_sources: Optional[List[str]] = None,
+        allowed_privacy_tiers: Optional[List[str]] = None,
         limit: int = 50
     ) -> List[Dict[str, Any]]:
-        """Performs dense vector retrieval via local FastEmbed + Qdrant."""
+        """Performs dense vector retrieval via local FastEmbed + Qdrant with privacy and source filters."""
         if not qdrant_service.is_connected():
             return []
 
@@ -192,6 +269,8 @@ class SearchService:
         hits = qdrant_service.search_vectors(
             query_vector=query_vec,
             source_type=source_type,
+            allowed_sources=allowed_sources,
+            allowed_privacy_tiers=allowed_privacy_tiers,
             limit=limit
         )
 
@@ -215,9 +294,16 @@ class SearchService:
         """
         fused: Dict[str, Dict[str, Any]] = {}
 
+        def _hit_key(h: Dict[str, Any]) -> str:
+            doc_id = h.get("document_id")
+            chunk_idx = h.get("chunk_index", 0)
+            if doc_id:
+                return f"{doc_id}_{chunk_idx}"
+            return str(h.get("chunk_id", ""))
+
         # 1. Process Lexical Ranking
         for rank_idx, hit in enumerate(lexical_hits):
-            cid = hit.get("chunk_id") or f"{hit.get('document_id')}_{hit.get('chunk_index', 0)}"
+            cid = _hit_key(hit)
             rank = rank_idx + 1
             rrf_contrib = WEIGHT_LEXICAL / (RRF_K + rank)
 
@@ -231,7 +317,7 @@ class SearchService:
 
         # 2. Process Dense Vector Ranking
         for rank_idx, hit in enumerate(semantic_hits):
-            cid = hit.get("chunk_id") or f"{hit.get('document_id')}_{hit.get('chunk_index', 0)}"
+            cid = _hit_key(hit)
             rank = rank_idx + 1
             rrf_contrib = WEIGHT_SEMANTIC / (RRF_K + rank)
 

@@ -1,5 +1,6 @@
 import hashlib
 import math
+import os
 import numpy as np
 from typing import List, Optional
 
@@ -24,6 +25,10 @@ class EmbeddingService:
 
     def _get_model(self):
         if self._model is None and not self._is_fallback:
+            if os.environ.get("AEGIS_OFFLINE_EMBEDDER", "").lower() in ("true", "1", "yes"):
+                logger.info("AEGIS_OFFLINE_EMBEDDER is active. Using deterministic local fallback embedder.")
+                self._is_fallback = True
+                return None
             try:
                 from fastembed import TextEmbedding
                 logger.info(f"Loading local embedding model: {self.model_name}")

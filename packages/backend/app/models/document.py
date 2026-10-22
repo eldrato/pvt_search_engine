@@ -34,6 +34,7 @@ class Document(Base):
     file_size_bytes: Mapped[int] = mapped_column(Integer, default=0)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     raw_content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    privacy_tier: Mapped[str] = mapped_column(String(32), nullable=False, default="private", index=True)
     doc_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
     
     created_at: Mapped[datetime] = mapped_column(
@@ -65,6 +66,7 @@ class Document(Base):
             "id": self.id,
             "title": self.title,
             "source_type": self.source_type,
+            "privacy_tier": getattr(self, "privacy_tier", "private") or "private",
             "file_path": self.file_path,
             "mime_type": self.mime_type,
             "file_size_bytes": self.file_size_bytes,

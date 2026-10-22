@@ -12,6 +12,7 @@ from app.ingestion.chunker import Chunker, Chunk
 from app.services.opensearch import opensearch_service
 from app.services.embedding import embedding_service
 from app.services.qdrant import qdrant_service
+from app.services.source_manager import source_manager
 from app.core.logging import logger
 
 
@@ -25,6 +26,7 @@ class IngestionService:
         filename: str,
         mime_type: Optional[str] = None,
         source_type: str = "upload",
+        privacy_tier: Optional[str] = None,
         doc_metadata: Optional[Dict[str, Any]] = None,
         db: Optional[AsyncSession] = None
     ) -> Dict[str, Any]:
@@ -72,9 +74,17 @@ class IngestionService:
             "storage_file_path": storage_file_path
         }
 
+        # 5. Resolve privacy tier and save to SSOT Database
+        resolved_tier = privacy_tier
+        if not resolved_tier:
+            resolved_tier = await source_manager.get_default_tier_for_source(db, source_type)
+        resolved_tier = (resolved_tier or "private").lower()
+        final_title = (doc_metadata or {}).get("title") or parsed_doc.title
+
         doc = Document(
-            title=parsed_doc.title,
+            title=final_title,
             source_type=source_type,
+            privacy_tier=resolved_tier,
             file_path=storage_file_path,
             mime_type=parsed_doc.mime_type,
             file_size_bytes=file_size,
@@ -112,9 +122,10 @@ class IngestionService:
             payload = {
                 "chunk_id": f"{doc_id}_{c.chunk_index}",
                 "document_id": doc_id,
-                "title": parsed_doc.title,
+                "title": final_title,
                 "content": c.content,
                 "source_type": source_type,
+                "privacy_tier": resolved_tier,
                 "mime_type": parsed_doc.mime_type,
                 "anchor_label": c.anchor_label,
                 "chunk_index": c.chunk_index,
@@ -139,10 +150,10 @@ class IngestionService:
             logger.warning(f"Failed to index vectors in Qdrant for document {doc_id}: {q_err}")
 
         return {
-            "document": doc.to_dict() if hasattr(doc, "to_dict") else {"id": doc_id, "title": parsed_doc.title},
+            "document": doc.to_dict() if hasattr(doc, "to_dict") else {"id": doc_id, "title": final_title},
             "chunks_created": len(chunks),
             "is_duplicate": False,
-            "message": f"Successfully ingested '{parsed_doc.title}' with {len(chunks)} chunks"
+            "message": f"Successfully ingested '{final_title}' with {len(chunks)} chunks"
         }
 
     async def ingest_text(
@@ -150,17 +161,20 @@ class IngestionService:
         title: str,
         text: str,
         source_type: str = "note",
+        privacy_tier: Optional[str] = None,
         doc_metadata: Optional[Dict[str, Any]] = None,
         db: Optional[AsyncSession] = None
     ) -> Dict[str, Any]:
         content_bytes = text.encode("utf-8")
         filename = f"{title.lower().replace(' ', '_')}.txt"
+        meta = {**(doc_metadata or {}), "title": title}
         return await self.ingest_file(
             content=content_bytes,
             filename=filename,
             mime_type="text/plain",
             source_type=source_type,
-            doc_metadata=doc_metadata,
+            privacy_tier=privacy_tier,
+            doc_metadata=meta,
             db=db
         )
 
@@ -168,6 +182,7 @@ class IngestionService:
         self,
         url: str,
         custom_title: Optional[str] = None,
+        privacy_tier: Optional[str] = None,
         db: Optional[AsyncSession] = None
     ) -> Dict[str, Any]:
         import httpx
@@ -199,6 +214,7 @@ class IngestionService:
             filename=filename,
             mime_type="text/html",
             source_type="web",
+            privacy_tier=privacy_tier or "public",
             doc_metadata={"url": url, "domain": domain, "ingested_from": "web"},
             db=db
         )

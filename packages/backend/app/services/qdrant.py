@@ -9,6 +9,7 @@ from qdrant_client.models import (
     Filter,
     FieldCondition,
     MatchValue,
+    MatchAny,
 )
 
 from app.core.config import settings
@@ -146,24 +147,56 @@ class QdrantService:
         self,
         query_vector: List[float],
         source_type: Optional[str] = None,
+        privacy_tier: Optional[str] = None,
+        allowed_sources: Optional[List[str]] = None,
+        allowed_privacy_tiers: Optional[List[str]] = None,
         limit: int = 20
     ) -> List[Dict[str, Any]]:
         """
-        Executes an approximate nearest neighbor (ANN) cosine similarity search.
+        Executes an approximate nearest neighbor (ANN) cosine similarity search with
+        optional privacy tier and source allowlist filtering (Phase 6).
         """
         if not self.client:
             return []
 
-        query_filter = None
+        must_conditions = []
         if source_type:
-            query_filter = Filter(
-                must=[
+            must_conditions.append(
+                FieldCondition(
+                    key="source_type",
+                    match=MatchValue(value=source_type)
+                )
+            )
+        elif allowed_sources:
+            try:
+                must_conditions.append(
                     FieldCondition(
                         key="source_type",
-                        match=MatchValue(value=source_type)
+                        match=MatchAny(any=allowed_sources)
                     )
-                ]
+                )
+            except Exception:
+                pass
+
+        if privacy_tier:
+            must_conditions.append(
+                FieldCondition(
+                    key="privacy_tier",
+                    match=MatchValue(value=privacy_tier)
+                )
             )
+        elif allowed_privacy_tiers:
+            try:
+                must_conditions.append(
+                    FieldCondition(
+                        key="privacy_tier",
+                        match=MatchAny(any=allowed_privacy_tiers)
+                    )
+                )
+            except Exception:
+                pass
+
+        query_filter = Filter(must=must_conditions) if must_conditions else None
 
         try:
             # Modern QdrantClient 1.19+ uses query_points
@@ -188,6 +221,7 @@ class QdrantService:
                     "score": round(float(pt.score), 4),
                     "semantic_score": round(float(pt.score), 4),
                     "source_type": payload.get("source_type", "upload"),
+                    "privacy_tier": payload.get("privacy_tier", "private"),
                     "mime_type": payload.get("mime_type", "text/plain"),
                     "anchor_label": payload.get("anchor_label", "Chunk"),
                     "chunk_index": payload.get("chunk_index", 0),

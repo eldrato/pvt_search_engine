@@ -39,7 +39,11 @@ import {
   BookOpen,
   Maximize2,
   Copy,
-  Check
+  Check,
+  ToggleLeft,
+  ToggleRight,
+  PieChart,
+  FolderCheck
 } from 'lucide-react';
 
 interface ServiceHealth {
@@ -82,6 +86,7 @@ interface SearchHit {
   content: string;
   score: number;
   source_type: string;
+  privacy_tier?: string;
   mime_type: string;
   anchor_label: string;
   chunk_index: number;
@@ -106,12 +111,33 @@ interface DocumentItem {
   id: string;
   title: string;
   source_type: string;
+  privacy_tier?: string;
   file_path?: string;
   mime_type: string;
   file_size_bytes: number;
   content_hash: string;
   chunk_count: number;
   created_at?: string;
+}
+
+interface SourceConfigItem {
+  source_type: string;
+  name: string;
+  description: string;
+  icon: string;
+  enabled: boolean;
+  default_privacy_tier: string;
+  allowed_privacy_tiers: string[];
+  doc_count: number;
+  chunk_count: number;
+}
+
+interface KnowledgeSummaryData {
+  total_documents: number;
+  total_chunks: number;
+  privacy_tiers: Record<string, { count: number; percentage: number }>;
+  sources: Record<string, { name: string; enabled: boolean; documents: number; chunks: number; default_privacy_tier: string }>;
+  storage: Record<string, any>;
 }
 
 interface CrawlDomainItem {
@@ -276,6 +302,14 @@ export default function AegisDashboard() {
   const [noteContent, setNoteContent] = useState<string>('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Phase 6: Personal Knowledge Engine & Privacy Tier state
+  const [sources, setSources] = useState<SourceConfigItem[]>([]);
+  const [knowledgeSummary, setKnowledgeSummary] = useState<KnowledgeSummaryData | null>(null);
+  const [isSourcesOpen, setIsSourcesOpen] = useState<boolean>(false);
+  const [selectedPrivacyTier, setSelectedPrivacyTier] = useState<string>('all');
+  const [includeSensitive, setIncludeSensitive] = useState<boolean>(true);
+  const [ingestPrivacyTier, setIngestPrivacyTier] = useState<string>('private');
+
   const fetchHealth = async () => {
     setLoadingHealth(true);
     try {
@@ -306,6 +340,64 @@ export default function AegisDashboard() {
       console.error('Failed to fetch documents:', err);
     } finally {
       setLoadingDocs(false);
+    }
+  };
+
+  const fetchSources = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/sources`);
+      if (res.ok) {
+        const data = await res.json();
+        setSources(data.sources || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch sources:', err);
+    }
+  };
+
+  const fetchKnowledgeSummary = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/knowledge/summary`);
+      if (res.ok) {
+        const data = await res.json();
+        setKnowledgeSummary(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch knowledge summary:', err);
+    }
+  };
+
+  const handleToggleSource = async (sourceType: string, enabled: boolean) => {
+    try {
+      const res = await fetch(`${API_BASE}/sources/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_type: sourceType, enabled }),
+      });
+      if (res.ok) {
+        fetchSources();
+        fetchKnowledgeSummary();
+        if (query.trim()) handleSearch();
+      }
+    } catch (err) {
+      console.error('Failed to toggle source:', err);
+    }
+  };
+
+  const handleReclassify = async (docId: string, newTier: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/documents/${docId}/classification`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ privacy_tier: newTier }),
+      });
+      if (res.ok) {
+        fetchDocuments();
+        fetchKnowledgeSummary();
+        if (query.trim()) handleSearch();
+      }
+    } catch (err) {
+      console.error('Failed to reclassify document:', err);
     }
   };
 
@@ -438,9 +530,12 @@ export default function AegisDashboard() {
     fetchHealth();
     fetchDocuments();
     fetchCrawlerData();
+    fetchSources();
+    fetchKnowledgeSummary();
     const interval = setInterval(() => {
       fetchHealth();
       fetchCrawlerData();
+      fetchKnowledgeSummary();
     }, 15000);
     return () => clearInterval(interval);
   }, []);
@@ -453,6 +548,7 @@ export default function AegisDashboard() {
     const crawlInterval = setInterval(() => {
       fetchCrawlerData();
       fetchDocuments();
+      fetchKnowledgeSummary();
     }, 2500);
 
     return () => clearInterval(crawlInterval);
@@ -473,6 +569,12 @@ export default function AegisDashboard() {
       let url = `${API_BASE}/search?q=${encodeURIComponent(trimmed)}&limit=25&mode=${encodeURIComponent(searchMode)}`;
       if (selectedSourceType !== 'all') {
         url += `&source_type=${encodeURIComponent(selectedSourceType)}`;
+      }
+      if (selectedPrivacyTier !== 'all') {
+        url += `&privacy_tier=${encodeURIComponent(selectedPrivacyTier)}`;
+      }
+      if (!includeSensitive) {
+        url += `&include_sensitive=false`;
       }
       const res = await fetch(url);
       if (res.ok) {
@@ -500,7 +602,7 @@ export default function AegisDashboard() {
       }
     }, 350);
     return () => clearTimeout(timer);
-  }, [query, selectedSourceType, searchMode]);
+  }, [query, selectedSourceType, searchMode, selectedPrivacyTier, includeSensitive]);
 
   const handleFileUpload = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -512,6 +614,7 @@ export default function AegisDashboard() {
       const formData = new FormData();
       formData.append('file', uploadFile);
       formData.append('source_type', 'upload');
+      formData.append('privacy_tier', ingestPrivacyTier);
 
       const res = await fetch(`${API_BASE}/documents/upload`, {
         method: 'POST',
@@ -524,6 +627,8 @@ export default function AegisDashboard() {
         setUploadFile(null);
         if (fileInputRef.current) fileInputRef.current.value = '';
         fetchDocuments();
+        fetchSources();
+        fetchKnowledgeSummary();
       } else {
         const err = await res.json();
         setUploadStatus(`Error: ${err.detail || 'Upload failed'}`);
@@ -549,6 +654,7 @@ export default function AegisDashboard() {
           title: noteTitle.trim(),
           content: noteContent.trim(),
           source_type: 'note',
+          privacy_tier: ingestPrivacyTier,
         }),
       });
 
@@ -558,6 +664,8 @@ export default function AegisDashboard() {
         setNoteTitle('');
         setNoteContent('');
         fetchDocuments();
+        fetchSources();
+        fetchKnowledgeSummary();
       } else {
         const err = await res.json();
         setUploadStatus(`Error: ${err.detail || 'Failed to save note'}`);
@@ -577,6 +685,8 @@ export default function AegisDashboard() {
       });
       if (res.ok) {
         fetchDocuments();
+        fetchSources();
+        fetchKnowledgeSummary();
         if (searchResponse) {
           setSearchResponse({
             ...searchResponse,
@@ -635,7 +745,7 @@ export default function AegisDashboard() {
             <div className="flex items-center gap-2">
               <h1 className="font-bold text-base tracking-tight text-white">AEGIS</h1>
               <span className="text-[10px] px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 font-mono font-semibold">
-                Phase 3 Active • Multi-Signal Ranking
+                Phase 6 Active • Personal Knowledge Engine
               </span>
             </div>
             <p className="text-[11px] text-slate-400">Privacy-First Personal Search & Research Engine</p>
@@ -643,6 +753,24 @@ export default function AegisDashboard() {
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Phase 6: Sources & Privacy Engine Button */}
+          <button
+            onClick={() => {
+              setIsSourcesOpen(true);
+              fetchKnowledgeSummary();
+              fetchSources();
+            }}
+            className="flex items-center gap-2 text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg font-medium border border-slate-700/80 transition-all hover:border-indigo-500/40"
+            id="sources-btn"
+            title="Manage indexing sources and privacy tiers"
+          >
+            <Sliders className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Sources & Privacy</span>
+            <span className="ml-1 px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 text-[10px] font-mono">
+              {sources.length > 0 ? `${sources.filter(s => s.enabled).length}/${sources.length}` : '4/4'}
+            </span>
+          </button>
+
           {/* Web Crawler Button */}
           <button
             onClick={() => {
@@ -812,6 +940,50 @@ export default function AegisDashboard() {
                   </button>
                 ))}
               </div>
+
+              {/* Phase 6: Privacy Tier Filters */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-slate-500 flex items-center gap-1 text-[11px]">
+                  <Lock className="w-3 h-3 text-indigo-400" /> Tier:
+                </span>
+                {[
+                  { id: 'all', label: 'All' },
+                  { id: 'public', label: 'Public' },
+                  { id: 'private', label: 'Private' },
+                  { id: 'sensitive', label: 'Sensitive' }
+                ].map((tier) => (
+                  <button
+                    key={tier.id}
+                    type="button"
+                    onClick={() => setSelectedPrivacyTier(tier.id)}
+                    className={`px-2 py-0.5 rounded-md text-xs font-medium transition-all ${
+                      selectedPrivacyTier === tier.id
+                        ? tier.id === 'public'
+                          ? 'bg-emerald-500/25 border border-emerald-500/40 text-emerald-300 font-semibold'
+                          : tier.id === 'sensitive'
+                          ? 'bg-rose-500/25 border border-rose-500/40 text-rose-300 font-semibold'
+                          : 'bg-indigo-600/30 border border-indigo-500/50 text-indigo-300 font-semibold'
+                        : 'bg-slate-900/50 border border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {tier.label}
+                  </button>
+                ))}
+
+                {/* Sensitive Vault Toggle Guard */}
+                <label className="flex items-center gap-1.5 text-[11px] text-slate-400 hover:text-slate-200 cursor-pointer ml-1 select-none">
+                  <input
+                    type="checkbox"
+                    checked={includeSensitive}
+                    onChange={(e) => setIncludeSensitive(e.target.checked)}
+                    className="rounded bg-slate-900 border-slate-700 text-indigo-600 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                  />
+                  <span className="flex items-center gap-1">
+                    <AlertTriangle className={`w-3 h-3 ${includeSensitive ? 'text-amber-400' : 'text-slate-500'}`} />
+                    <span>Vault Data</span>
+                  </span>
+                </label>
+              </div>
             </div>
           </form>
         </div>
@@ -879,6 +1051,26 @@ export default function AegisDashboard() {
                     ) : (
                       <span className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 font-semibold">
                         <span>🔍 Lexical</span>
+                      </span>
+                    )}
+
+                    {/* Phase 6: Privacy Tier Badge */}
+                    {hit.privacy_tier && (
+                      <span className={`inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded border capitalize ${
+                        hit.privacy_tier === 'public'
+                          ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-300'
+                          : hit.privacy_tier === 'sensitive'
+                          ? 'bg-rose-500/15 border-rose-500/35 text-rose-300 font-semibold'
+                          : 'bg-indigo-500/15 border-indigo-500/35 text-indigo-300'
+                      }`}>
+                        {hit.privacy_tier === 'sensitive' ? (
+                          <AlertTriangle className="w-2.5 h-2.5 text-rose-400" />
+                        ) : hit.privacy_tier === 'public' ? (
+                          <ShieldCheck className="w-2.5 h-2.5 text-emerald-400" />
+                        ) : (
+                          <Lock className="w-2.5 h-2.5 text-indigo-400" />
+                        )}
+                        <span>{hit.privacy_tier}</span>
                       </span>
                     )}
 
@@ -1232,9 +1424,13 @@ export default function AegisDashboard() {
                   <span className="text-slate-300">Phase 4: Semantic Vectors & Evaluation</span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-mono">DONE</span>
                 </div>
-                <div className="p-2.5 rounded-lg bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-between">
-                  <span className="text-white font-medium">Phase 5: Document Intelligence</span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/40 text-indigo-200 font-mono">ACTIVE</span>
+                <div className="p-2.5 rounded-lg bg-slate-900/60 border border-emerald-500/30 flex items-center justify-between">
+                  <span className="text-slate-300">Phase 5: Document Intelligence</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-mono">DONE</span>
+                </div>
+                <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/40 flex items-center justify-between">
+                  <span className="text-white font-medium">Phase 6: Personal Knowledge Engine</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/30 text-emerald-300 font-mono font-semibold">DONE</span>
                 </div>
               </div>
             </div>
@@ -1926,6 +2122,45 @@ export default function AegisDashboard() {
                   />
                 </div>
 
+                {/* Phase 6: Privacy Tier Classification Picker */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs text-slate-300 font-medium flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <Lock className="w-3.5 h-3.5 text-indigo-400" />
+                      Privacy Tier & Classification
+                    </span>
+                    <span className="text-[11px] text-slate-500">Tier controls indexing visibility</span>
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { id: 'public', label: 'Public', desc: 'Open domain / shared', color: 'emerald' },
+                      { id: 'private', label: 'Private', desc: 'Personal workspace', color: 'indigo' },
+                      { id: 'sensitive', label: 'Sensitive', desc: 'Vault & credentials', color: 'rose' }
+                    ].map((tier) => (
+                      <button
+                        key={tier.id}
+                        type="button"
+                        onClick={() => setIngestPrivacyTier(tier.id)}
+                        className={`p-2.5 rounded-xl border text-left flex flex-col gap-1 transition-all ${
+                          ingestPrivacyTier === tier.id
+                            ? tier.id === 'public'
+                              ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300 shadow-sm'
+                              : tier.id === 'sensitive'
+                              ? 'bg-rose-500/15 border-rose-500/50 text-rose-300 shadow-sm'
+                              : 'bg-indigo-500/15 border-indigo-500/50 text-indigo-300 shadow-sm'
+                            : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-xs text-white capitalize">{tier.label}</span>
+                          {ingestPrivacyTier === tier.id && <Check className="w-3.5 h-3.5" />}
+                        </div>
+                        <span className="text-[10px] text-slate-400">{tier.desc}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 <div className="flex justify-end gap-2">
                   <button
                     type="button"
@@ -1966,11 +2201,50 @@ export default function AegisDashboard() {
                   <textarea
                     value={noteContent}
                     onChange={(e) => setNoteContent(e.target.value)}
-                    rows={6}
+                    rows={5}
                     placeholder="Type or paste markdown, notes, or research findings..."
                     className="w-full bg-slate-950/80 border border-slate-700/80 rounded-lg p-3 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono"
                     required
                   />
+                </div>
+
+                {/* Phase 6: Privacy Tier Classification Picker for Notes */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs text-slate-300 font-medium flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <Lock className="w-3.5 h-3.5 text-indigo-400" />
+                      Privacy Tier & Classification
+                    </span>
+                    <span className="text-[11px] text-slate-500">Tier controls indexing visibility</span>
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { id: 'public', label: 'Public', desc: 'Open domain / shared', color: 'emerald' },
+                      { id: 'private', label: 'Private', desc: 'Personal workspace', color: 'indigo' },
+                      { id: 'sensitive', label: 'Sensitive', desc: 'Vault & credentials', color: 'rose' }
+                    ].map((tier) => (
+                      <button
+                        key={tier.id}
+                        type="button"
+                        onClick={() => setIngestPrivacyTier(tier.id)}
+                        className={`p-2.5 rounded-xl border text-left flex flex-col gap-1 transition-all ${
+                          ingestPrivacyTier === tier.id
+                            ? tier.id === 'public'
+                              ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300 shadow-sm'
+                              : tier.id === 'sensitive'
+                              ? 'bg-rose-500/15 border-rose-500/50 text-rose-300 shadow-sm'
+                              : 'bg-indigo-500/15 border-indigo-500/50 text-indigo-300 shadow-sm'
+                            : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-xs text-white capitalize">{tier.label}</span>
+                          {ingestPrivacyTier === tier.id && <Check className="w-3.5 h-3.5" />}
+                        </div>
+                        <span className="text-[10px] text-slate-400">{tier.desc}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 <div className="flex justify-end gap-2 pt-2">
@@ -2040,6 +2314,19 @@ export default function AegisDashboard() {
                           <span>{(doc.file_size_bytes / 1024).toFixed(1)} KB</span>
                           <span>•</span>
                           <span className="text-indigo-400 font-mono">{doc.chunk_count} chunks</span>
+                          <span>•</span>
+                          {/* Phase 6: Privacy Tier Reclassification Dropdown */}
+                          <select
+                            value={doc.privacy_tier || 'private'}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => handleReclassify(doc.id, e.target.value)}
+                            className="bg-slate-950 border border-slate-700/80 rounded px-1.5 py-0.5 text-[10px] text-slate-300 focus:outline-none focus:border-indigo-500 font-mono cursor-pointer"
+                            title="Reclassify Privacy Tier"
+                          >
+                            <option value="public">🟢 Public</option>
+                            <option value="private">🔵 Private</option>
+                            <option value="sensitive">🔴 Sensitive</option>
+                          </select>
                           {doc.created_at && (
                             <>
                               <span>•</span>
@@ -2445,14 +2732,197 @@ export default function AegisDashboard() {
         </div>
       )}
 
+      {/* Phase 6: Sources & Personal Knowledge Engine Modal */}
+      {isSourcesOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+          <div className="glass-panel w-full max-w-3xl max-h-[88vh] rounded-2xl border border-indigo-500/30 p-6 flex flex-col gap-5 shadow-2xl overflow-y-auto">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                  <Sliders className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base text-white">Personal Knowledge Engine</h3>
+                  <p className="text-[11px] text-slate-400">Data source indexing toggles, storage metrics & privacy tiers</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsSourcesOpen(false)}
+                className="p-1 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Knowledge Overview Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-800 flex flex-col gap-1">
+                <span className="text-[11px] text-slate-400 font-medium">Total Documents</span>
+                <span className="text-xl font-bold text-white font-mono">
+                  {knowledgeSummary?.total_documents ?? documents.length}
+                </span>
+                <span className="text-[10px] text-indigo-400">Indexed in SSOT & Engines</span>
+              </div>
+              <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-800 flex flex-col gap-1">
+                <span className="text-[11px] text-slate-400 font-medium">Total Semantic Chunks</span>
+                <span className="text-xl font-bold text-white font-mono">
+                  {knowledgeSummary?.total_chunks ?? 0}
+                </span>
+                <span className="text-[10px] text-indigo-400">Vectorized in Qdrant & OpenSearch</span>
+              </div>
+              <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-800 flex flex-col gap-1">
+                <span className="text-[11px] text-slate-400 font-medium">Active Data Sources</span>
+                <span className="text-xl font-bold text-emerald-400 font-mono">
+                  {sources.filter(s => s.enabled).length} / {sources.length || 4}
+                </span>
+                <span className="text-[10px] text-slate-500">Live search enabled</span>
+              </div>
+            </div>
+
+            {/* Privacy Tier Distribution Bar */}
+            {knowledgeSummary?.privacy_tiers && (
+              <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800 flex flex-col gap-3">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-slate-300 flex items-center gap-1.5">
+                    <PieChart className="w-4 h-4 text-indigo-400" />
+                    Privacy Tier Breakdown
+                  </span>
+                  <span className="text-slate-500 text-[11px]">Dynamic classification breakdown</span>
+                </div>
+
+                <div className="w-full bg-slate-950 rounded-full h-3 overflow-hidden flex border border-slate-800">
+                  <div
+                    style={{ width: `${knowledgeSummary.privacy_tiers.public?.percentage || 0}%` }}
+                    className="bg-emerald-500 transition-all duration-300"
+                    title={`Public: ${knowledgeSummary.privacy_tiers.public?.count || 0}`}
+                  />
+                  <div
+                    style={{ width: `${knowledgeSummary.privacy_tiers.private?.percentage || 0}%` }}
+                    className="bg-indigo-500 transition-all duration-300"
+                    title={`Private: ${knowledgeSummary.privacy_tiers.private?.count || 0}`}
+                  />
+                  <div
+                    style={{ width: `${knowledgeSummary.privacy_tiers.sensitive?.percentage || 0}%` }}
+                    className="bg-rose-500 transition-all duration-300"
+                    title={`Sensitive: ${knowledgeSummary.privacy_tiers.sensitive?.count || 0}`}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between text-xs font-mono">
+                  <div className="flex items-center gap-1.5 text-emerald-400">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
+                    <span>Public: {knowledgeSummary.privacy_tiers.public?.count || 0} ({knowledgeSummary.privacy_tiers.public?.percentage || 0}%)</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-indigo-400">
+                    <span className="w-2.5 h-2.5 rounded-full bg-indigo-500" />
+                    <span>Private: {knowledgeSummary.privacy_tiers.private?.count || 0} ({knowledgeSummary.privacy_tiers.private?.percentage || 0}%)</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-rose-400">
+                    <span className="w-2.5 h-2.5 rounded-full bg-rose-500" />
+                    <span>Sensitive: {knowledgeSummary.privacy_tiers.sensitive?.count || 0} ({knowledgeSummary.privacy_tiers.sensitive?.percentage || 0}%)</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Configured Data Sources List */}
+            <div className="flex flex-col gap-3">
+              <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                Configured Knowledge Ingestion Sources
+              </span>
+
+              <div className="flex flex-col gap-2.5">
+                {sources.map((src) => (
+                  <div
+                    key={src.source_type}
+                    className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 hover:border-indigo-500/30 flex items-center justify-between gap-4 transition-all"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={`p-2.5 rounded-xl border ${
+                        src.enabled 
+                          ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400' 
+                          : 'bg-slate-800 text-slate-500 border-slate-700'
+                      }`}>
+                        {src.source_type === 'upload' ? <File className="w-5 h-5" /> :
+                         src.source_type === 'note' ? <FileText className="w-5 h-5" /> :
+                         src.source_type === 'code' ? <FileCode className="w-5 h-5" /> :
+                         <Globe className="w-5 h-5" />}
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-semibold text-sm text-white">{src.name}</h4>
+                          <span className={`text-[10px] px-2 py-0.5 rounded font-mono border capitalize ${
+                            src.default_privacy_tier === 'public' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300' :
+                            src.default_privacy_tier === 'sensitive' ? 'bg-rose-500/10 border-rose-500/20 text-rose-300' :
+                            'bg-indigo-500/10 border-indigo-500/20 text-indigo-300'
+                          }`}>
+                            Default: {src.default_privacy_tier}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-400 mt-0.5">{src.description}</p>
+                        <div className="flex items-center gap-3 text-[11px] text-slate-500 font-mono mt-1">
+                          <span>{src.doc_count} documents</span>
+                          <span>•</span>
+                          <span>{src.chunk_count} chunks indexed</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleSource(src.source_type, !src.enabled)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border transition-all ${
+                          src.enabled
+                            ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25'
+                            : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'
+                        }`}
+                      >
+                        {src.enabled ? (
+                          <>
+                            <ToggleRight className="w-4 h-4 text-emerald-400" />
+                            <span>Enabled</span>
+                          </>
+                        ) : (
+                          <>
+                            <ToggleLeft className="w-4 h-4 text-slate-500" />
+                            <span>Disabled</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Privacy Architecture Notice */}
+            <div className="p-3.5 rounded-xl bg-slate-900/40 border border-slate-800 text-[11px] text-slate-400 flex flex-col gap-1">
+              <span className="font-semibold text-slate-300">Privacy & Exclusion Guarantee:</span>
+              <span>Disabling a source excludes all its documents and vectors from hybrid search results instantly, while leaving PostgreSQL SSOT records intact. Sensitive documents are protected by vault guards.</span>
+            </div>
+
+            <div className="flex justify-end border-t border-slate-800 pt-3">
+              <button
+                onClick={() => setIsSourcesOpen(false)}
+                className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition-all"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Footer */}
       <footer className="border-t border-slate-800/80 py-4 px-6 text-center text-xs text-slate-500 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <ShieldCheck className="w-4 h-4 text-emerald-400" />
           <span>Aegis Personal Search & Research Engine</span>
         </div>
-        <div className="text-[11px] font-mono text-cyan-400">
-          Phase 2: Controlled Web Crawler Active
+        <div className="text-[11px] font-mono text-indigo-400">
+          Phase 6: Personal Knowledge Engine Active
         </div>
       </footer>
     </main>

@@ -11,6 +11,7 @@ from app.models.document import Document, DocumentChunk
 from app.services.ingestion import ingestion_service
 from app.services.opensearch import opensearch_service
 from app.services.document_intelligence import document_intelligence_service
+from app.services.knowledge_engine import knowledge_engine
 from app.core.logging import logger
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
@@ -20,6 +21,7 @@ class IngestTextRequest(BaseModel):
     title: str = Field(..., description="Document or note title")
     content: str = Field(..., description="Raw text or note content")
     source_type: str = Field(default="note", description="Source category: note, code, or personal")
+    privacy_tier: Optional[str] = Field(None, description="Privacy tier: public, private, or sensitive")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Custom metadata tags")
 
 
@@ -27,6 +29,7 @@ class DocumentSummary(BaseModel):
     id: str
     title: str
     source_type: str
+    privacy_tier: str = "private"
     file_path: Optional[str] = None
     mime_type: str
     file_size_bytes: int
@@ -41,10 +44,20 @@ class DocumentListResponse(BaseModel):
     documents: List[DocumentSummary]
 
 
+class UpdateClassificationRequest(BaseModel):
+    privacy_tier: str = Field(..., pattern="^(public|private|sensitive)$", description="Target privacy tier")
+
+
+class BatchClassifyRequest(BaseModel):
+    document_ids: List[str] = Field(..., min_length=1, description="List of document IDs to reclassify")
+    privacy_tier: str = Field(..., pattern="^(public|private|sensitive)$", description="Target privacy tier")
+
+
 @router.post("/upload", status_code=status.HTTP_201_CREATED)
 async def upload_document(
     file: UploadFile = File(...),
     source_type: str = Form("upload"),
+    privacy_tier: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_async_session)
 ):
     """
@@ -61,6 +74,7 @@ async def upload_document(
             filename=file.filename or "uploaded_file.txt",
             mime_type=file.content_type,
             source_type=source_type,
+            privacy_tier=privacy_tier,
             db=db
         )
         return res
@@ -82,6 +96,7 @@ async def ingest_raw_text(
             title=req.title,
             text=req.content,
             source_type=req.source_type,
+            privacy_tier=req.privacy_tier,
             doc_metadata=req.metadata,
             db=db
         )
@@ -301,4 +316,51 @@ async def get_chunk_location_context(
     for surrounding reading context.
     """
     return await document_intelligence_service.get_chunk_location_context(doc_id, chunk_index, db)
+
+
+@router.patch("/{doc_id}/classification")
+async def update_document_classification(
+    doc_id: str,
+    payload: UpdateClassificationRequest,
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Update privacy classification tier of a document (public, private, sensitive)
+    and propagate to search indices (Phase 6).
+    """
+    try:
+        updated = await knowledge_engine.update_document_classification(
+            db=db,
+            document_id=doc_id,
+            new_tier=payload.privacy_tier
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"Document '{doc_id}' not found.")
+        return updated
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as e:
+        logger.error(f"Error classifying document {doc_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update document classification: {str(e)}")
+
+
+@router.post("/batch-classify")
+async def batch_classify_documents(
+    payload: BatchClassifyRequest,
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Batch update privacy tiers for multiple documents (Phase 6).
+    """
+    try:
+        return await knowledge_engine.batch_classify(
+            db=db,
+            document_ids=payload.document_ids,
+            new_tier=payload.privacy_tier
+        )
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as e:
+        logger.error(f"Error in batch classification: {e}")
+        raise HTTPException(status_code=500, detail=f"Batch classification failed: {str(e)}")
 

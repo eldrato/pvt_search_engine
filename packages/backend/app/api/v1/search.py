@@ -18,6 +18,7 @@ class SearchHit(BaseModel):
     content: str
     score: float
     source_type: str
+    privacy_tier: str = "private"
     mime_type: str
     anchor_label: str
     chunk_index: int
@@ -43,18 +44,23 @@ async def lexical_search(
     q: str = Query(..., min_length=1, description="Search query string"),
     mode: str = Query("hybrid", pattern="^(hybrid|lexical|semantic)$", description="Retrieval mode (hybrid, lexical, semantic)"),
     source_type: Optional[str] = Query(None, description="Filter by source type (upload, note, code, web)"),
+    privacy_tier: Optional[str] = Query(None, pattern="^(public|private|sensitive)$", description="Filter by privacy tier"),
+    include_sensitive: bool = Query(True, description="Whether to include sensitive intelligence in results"),
     limit: int = Query(20, ge=1, le=100, description="Max results to return"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     db: AsyncSession = Depends(get_async_session)
 ):
     """
     Search ingested personal intelligence using Hybrid Fusion (BM25 + Dense Vectors via RRF),
-    pure Lexical BM25, or pure Semantic Vector retrieval with Multi-Signal ranking.
+    pure Lexical BM25, or pure Semantic Vector retrieval with Multi-Signal ranking,
+    privacy tier classification and source enable/disable filtering (Phase 6).
     """
     results = await search_service.search(
         query=q,
         mode=mode,
         source_type=source_type,
+        privacy_tier=privacy_tier,
+        include_sensitive=include_sensitive,
         limit=limit,
         offset=offset,
         db=db

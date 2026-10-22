@@ -170,6 +170,23 @@ Aegis provides deep document inspection, visual ground-truth evidence, and exact
 
 ---
 
+## 🧠 Personal Knowledge Engine & Multi-Source Connectors (Phase 6)
+
+Aegis functions as a unified private knowledge base with granular privacy controls and source management:
+- **Pluggable Source Connectors**: First-class support for `upload` (documents), `note` (markdown & personal notes), `code` (repositories), and `web` (crawled web pages).
+- **Multi-Tier Privacy Architecture**:
+  - **`public`**: Open knowledge items and general references accessible without constraints.
+  - **`private` (Default)**: Standard personal documents and notes.
+  - **`sensitive`**: Vault-grade confidential items protected by security boundaries and restricted retrieval filters.
+- **Source Toggles & Instant Search Exclusion**:
+  - `GET /api/v1/sources`: List all registered source connectors with document and chunk counts.
+  - `POST /api/v1/sources/toggle`: Instant enabling/disabling of source types. Disabling immediately excludes content from OpenSearch lexical and Qdrant semantic indices while preserving PostgreSQL SSOT records.
+  - `PATCH /api/v1/sources/{source_type}`: Configure default privacy tiers and connector settings.
+- **Knowledge Analytics & Telemetry**:
+  - `GET /api/v1/knowledge/summary`: Live distribution of knowledge across privacy tiers, source types, and storage health.
+- **Knowledge Studio UI**: Intuitive header modal for live source toggling, privacy tier distribution charts, and source inspection.
+
+---
 
 ## 🔒 Security Boundary & Storage Invariants
 

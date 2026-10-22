@@ -47,6 +47,7 @@ INDEX_MAPPING = {
                 "analyzer": "aegis_text_analyzer"
             },
             "source_type": {"type": "keyword"},
+            "privacy_tier": {"type": "keyword"},
             "mime_type": {"type": "keyword"},
             "anchor_label": {"type": "text"},
             "chunk_index": {"type": "integer"},
@@ -168,11 +169,15 @@ class OpenSearchService:
         self,
         query_text: str,
         source_type: Optional[str] = None,
+        privacy_tier: Optional[str] = None,
+        allowed_sources: Optional[List[str]] = None,
+        allowed_privacy_tiers: Optional[List[str]] = None,
         limit: int = 20,
         offset: int = 0
     ) -> Optional[Dict[str, Any]]:
         """
-        Executes BM25 search against OpenSearch index with query highlighting.
+        Executes BM25 search against OpenSearch index with query highlighting,
+        privacy tier filtering, and source allowlist (Phase 6).
         Returns None if OpenSearch is not connected.
         """
         if not self.is_connected():
@@ -192,6 +197,13 @@ class OpenSearchService:
         filters: List[Dict[str, Any]] = []
         if source_type:
             filters.append({"term": {"source_type": source_type}})
+        elif allowed_sources:
+            filters.append({"terms": {"source_type": allowed_sources}})
+
+        if privacy_tier:
+            filters.append({"term": {"privacy_tier": privacy_tier}})
+        elif allowed_privacy_tiers:
+            filters.append({"terms": {"privacy_tier": allowed_privacy_tiers}})
 
         body = {
             "from": offset,
@@ -245,6 +257,7 @@ class OpenSearchService:
                     "content": src.get("content"),
                     "score": round(score, 4),
                     "source_type": src.get("source_type"),
+                    "privacy_tier": src.get("privacy_tier", "private"),
                     "mime_type": src.get("mime_type"),
                     "anchor_label": src.get("anchor_label"),
                     "chunk_index": src.get("chunk_index"),

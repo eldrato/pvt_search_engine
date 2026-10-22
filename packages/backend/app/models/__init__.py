@@ -1,5 +1,6 @@
 from app.models.document import Document, DocumentChunk
 from app.models.crawler import CrawlDomain, CrawlJob, CrawlPage
+from app.models.source import SourceConfig
 
 __all__ = [
     "Document",
@@ -7,4 +8,5 @@ __all__ = [
     "CrawlDomain",
     "CrawlJob",
     "CrawlPage",
+    "SourceConfig",
 ]
