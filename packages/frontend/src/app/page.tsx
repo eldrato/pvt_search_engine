@@ -43,7 +43,8 @@ import {
   ToggleLeft,
   ToggleRight,
   PieChart,
-  FolderCheck
+  FolderCheck,
+  Share2
 } from 'lucide-react';
 
 interface ServiceHealth {
@@ -105,6 +106,73 @@ interface SearchResponse {
   latency_ms: number;
   engine: string;
   results: SearchHit[];
+  knowledge_entities?: Array<{
+    id: string;
+    name: string;
+    entity_type: string;
+    mention_count: number;
+  }>;
+}
+
+interface GraphNode {
+  id: string;
+  name: string;
+  canonical_name: string;
+  entity_type: string;
+  description?: string;
+  mention_count: number;
+  degree: number;
+  properties?: Record<string, any>;
+  x?: number;
+  y?: number;
+  vx?: number;
+  vy?: number;
+}
+
+interface GraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  relation_type: string;
+  weight: number;
+  description?: string;
+}
+
+interface GraphCitation {
+  grounding_id: string;
+  document_id: string;
+  document_title: string;
+  source_type: string;
+  mime_type: string;
+  chunk_id?: string;
+  chunk_index: number;
+  anchor_label: string;
+  span_start: number;
+  span_end: number;
+  matched_text: string;
+  context_snippet: string;
+  confidence: number;
+  created_at?: string;
+}
+
+interface EntityDetail extends GraphNode {
+  relationships: Array<{
+    id: string;
+    relation_type: string;
+    weight: number;
+    direction: 'incoming' | 'outgoing';
+    other_entity: { id: string; name: string; entity_type?: string };
+    description?: string;
+  }>;
+  citations: GraphCitation[];
+}
+
+interface GraphStats {
+  total_nodes: number;
+  total_edges: number;
+  total_groundings: number;
+  entity_types: Record<string, number>;
+  top_entities: GraphNode[];
 }
 
 interface DocumentItem {
@@ -401,6 +469,172 @@ export default function AegisDashboard() {
     }
   };
 
+  // Knowledge Graph State (Phase 7)
+  const [isGraphOpen, setIsGraphOpen] = useState<boolean>(false);
+  const [graphData, setGraphData] = useState<{ nodes: GraphNode[]; edges: GraphEdge[] }>({ nodes: [], edges: [] });
+  const [graphStats, setGraphStats] = useState<GraphStats | null>(null);
+  const [graphQuery, setGraphQuery] = useState<string>('');
+  const [graphTypeFilter, setGraphTypeFilter] = useState<string>('ALL');
+  const [graphMinWeight, setGraphMinWeight] = useState<number>(0.5);
+  const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
+  const [selectedEntityDetail, setSelectedEntityDetail] = useState<EntityDetail | null>(null);
+  const [isLoadingGraph, setIsLoadingGraph] = useState<boolean>(false);
+  const [isRebuildingGraph, setIsRebuildingGraph] = useState<boolean>(false);
+  const [graphZoom, setGraphZoom] = useState<number>(1);
+  const [graphPan, setGraphPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState<boolean>(false);
+  const [panStart, setPanStart] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+
+  const fetchGraphStats = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/graph/stats`);
+      if (res.ok) {
+        const data = await res.json();
+        setGraphStats(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch graph stats:', err);
+    }
+  };
+
+  const fetchGraph = async (queryFilter?: string, typeFilter?: string, minWeightVal?: number) => {
+    setIsLoadingGraph(true);
+    try {
+      const q = queryFilter !== undefined ? queryFilter : graphQuery;
+      const t = typeFilter !== undefined ? typeFilter : graphTypeFilter;
+      const mw = minWeightVal !== undefined ? minWeightVal : graphMinWeight;
+
+      const params = new URLSearchParams();
+      if (q.trim()) params.append('query', q.trim());
+      if (t && t !== 'ALL') params.append('entity_type', t);
+      params.append('min_weight', mw.toString());
+      params.append('limit_nodes', '120');
+      params.append('limit_edges', '250');
+
+      const res = await fetch(`${API_BASE}/graph?${params.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        const rawNodes: GraphNode[] = data.nodes || [];
+        const edges: GraphEdge[] = data.edges || [];
+
+        // Force-directed coordinate simulation
+        const nodes: GraphNode[] = rawNodes.map((n: GraphNode, i: number, arr: GraphNode[]) => {
+          const angle = (i / Math.max(1, arr.length)) * 2 * Math.PI;
+          const radius = Math.min(300, 100 + arr.length * 6);
+          const x = 450 + radius * Math.cos(angle) + (Math.random() - 0.5) * 30;
+          const y = 300 + radius * Math.sin(angle) + (Math.random() - 0.5) * 30;
+          return { ...n, x, y };
+        });
+
+        const nodeMap = new Map<string, GraphNode>();
+        nodes.forEach(n => nodeMap.set(n.id, n));
+
+        // 35 physics ticks for force stabilization
+        for (let tick = 0; tick < 35; tick++) {
+          for (let i = 0; i < nodes.length; i++) {
+            for (let j = i + 1; j < nodes.length; j++) {
+              const dx = (nodes[j].x || 0) - (nodes[i].x || 0);
+              const dy = (nodes[j].y || 0) - (nodes[i].y || 0);
+              const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+              if (dist < 200) {
+                const force = (200 - dist) / dist * 0.35;
+                nodes[i].x = (nodes[i].x || 0) - dx * force;
+                nodes[i].y = (nodes[i].y || 0) - dy * force;
+                nodes[j].x = (nodes[j].x || 0) + dx * force;
+                nodes[j].y = (nodes[j].y || 0) + dy * force;
+              }
+            }
+          }
+          edges.forEach(e => {
+            const s = nodeMap.get(e.source);
+            const tg = nodeMap.get(e.target);
+            if (s && tg) {
+              const dx = (tg.x || 0) - (s.x || 0);
+              const dy = (tg.y || 0) - (s.y || 0);
+              const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+              const force = (dist - 130) * 0.04;
+              s.x = (s.x || 0) + dx * force;
+              s.y = (s.y || 0) + dy * force;
+              tg.x = (tg.x || 0) - dx * force;
+              tg.y = (tg.y || 0) - dy * force;
+            }
+          });
+          nodes.forEach(n => {
+            n.x = (n.x || 450) + (450 - (n.x || 450)) * 0.02;
+            n.y = (n.y || 300) + (300 - (n.y || 300)) * 0.02;
+          });
+        }
+
+        setGraphData({ nodes, edges });
+      }
+    } catch (err) {
+      console.error('Failed to fetch graph topology:', err);
+    } finally {
+      setIsLoadingGraph(false);
+    }
+  };
+
+  const fetchEntityDetail = async (entityId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/graph/entity/${entityId}`);
+      if (res.ok) {
+        const data = await res.json();
+        setSelectedEntityDetail(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch entity detail:', err);
+    }
+  };
+
+  const handleRebuildGraph = async () => {
+    setIsRebuildingGraph(true);
+    try {
+      const res = await fetch(`${API_BASE}/graph/extract-all`, { method: 'POST' });
+      if (res.ok) {
+        await fetchGraph();
+        await fetchGraphStats();
+      }
+    } catch (err) {
+      console.error('Failed to rebuild knowledge graph:', err);
+    } finally {
+      setIsRebuildingGraph(false);
+    }
+  };
+
+  const handleDeleteEntity = async (entityId: string) => {
+    if (!confirm('Are you sure you want to remove this entity from the Knowledge Graph?')) return;
+    try {
+      const res = await fetch(`${API_BASE}/graph/entity/${entityId}`, { method: 'DELETE' });
+      if (res.ok) {
+        setSelectedEntityDetail(null);
+        setSelectedEntityId(null);
+        fetchGraph();
+        fetchGraphStats();
+      }
+    } catch (err) {
+      console.error('Failed to delete entity:', err);
+    }
+  };
+
+  const getNodeColor = (type: string) => {
+    switch ((type || '').toUpperCase()) {
+      case 'TECHNOLOGY': return { bg: '#06b6d4', glow: 'rgba(6, 182, 212, 0.45)', stroke: '#22d3ee', text: '#67e8f9' };
+      case 'CONCEPT': return { bg: '#6366f1', glow: 'rgba(99, 102, 241, 0.45)', stroke: '#818cf8', text: '#a5b4fc' };
+      case 'ORGANIZATION': return { bg: '#10b981', glow: 'rgba(16, 185, 129, 0.45)', stroke: '#34d399', text: '#6ee7b7' };
+      case 'PERSON': return { bg: '#f59e0b', glow: 'rgba(245, 158, 11, 0.45)', stroke: '#fbbf24', text: '#fde68a' };
+      case 'DOCUMENT': return { bg: '#f43f5e', glow: 'rgba(244, 63, 94, 0.45)', stroke: '#fb7185', text: '#fecdd3' };
+      default: return { bg: '#8b5cf6', glow: 'rgba(139, 92, 246, 0.45)', stroke: '#a78bfa', text: '#ddd6fe' };
+    }
+  };
+
+  const handleOpenGraphOnEntity = (entityName: string) => {
+    setIsGraphOpen(true);
+    setGraphQuery(entityName);
+    fetchGraph(entityName);
+  };
+
   // Crawler state
   const [isCrawlerOpen, setIsCrawlerOpen] = useState<boolean>(false);
   const [crawlDomains, setCrawlDomains] = useState<CrawlDomainItem[]>([]);
@@ -532,10 +766,12 @@ export default function AegisDashboard() {
     fetchCrawlerData();
     fetchSources();
     fetchKnowledgeSummary();
+    fetchGraphStats();
     const interval = setInterval(() => {
       fetchHealth();
       fetchCrawlerData();
       fetchKnowledgeSummary();
+      fetchGraphStats();
     }, 15000);
     return () => clearInterval(interval);
   }, []);
@@ -745,7 +981,7 @@ export default function AegisDashboard() {
             <div className="flex items-center gap-2">
               <h1 className="font-bold text-base tracking-tight text-white">AEGIS</h1>
               <span className="text-[10px] px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 font-mono font-semibold">
-                Phase 6 Active • Personal Knowledge Engine
+                Phase 7 Active • Grounded Knowledge Graph
               </span>
             </div>
             <p className="text-[11px] text-slate-400">Privacy-First Personal Search & Research Engine</p>
@@ -753,6 +989,24 @@ export default function AegisDashboard() {
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Phase 7: Knowledge Graph Explorer Button */}
+          <button
+            onClick={() => {
+              setIsGraphOpen(true);
+              fetchGraph();
+              fetchGraphStats();
+            }}
+            className="flex items-center gap-2 text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg font-medium border border-slate-700/80 transition-all hover:border-cyan-500/40"
+            id="knowledge-graph-btn"
+            title="Explore Grounded Knowledge Graph & Entity Relationships"
+          >
+            <Share2 className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Knowledge Graph</span>
+            <span className="ml-1 px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 text-[10px] font-mono">
+              {graphStats ? `${graphStats.total_nodes} nodes` : 'Graph'}
+            </span>
+          </button>
+
           {/* Phase 6: Sources & Privacy Engine Button */}
           <button
             onClick={() => {
@@ -1001,6 +1255,51 @@ export default function AegisDashboard() {
                   {searchResponse.latency_ms} ms • {searchResponse.engine}
                 </span>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Phase 7: Discovered Knowledge Graph Entities */}
+        {hasSearched && searchResponse?.knowledge_entities && searchResponse.knowledge_entities.length > 0 && (
+          <div className="p-3.5 rounded-xl bg-gradient-to-r from-cyan-950/40 via-indigo-950/30 to-slate-900/40 border border-cyan-500/20 flex items-center justify-between gap-4 flex-wrap">
+            <div className="flex items-center gap-2.5">
+              <div className="p-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-400">
+                <Share2 className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 className="text-xs font-semibold text-white flex items-center gap-2">
+                  <span>Knowledge Graph Entities</span>
+                  <span className="text-[10px] text-cyan-300 font-mono font-normal">
+                    {searchResponse.knowledge_entities.length} discovered for query
+                  </span>
+                </h4>
+                <p className="text-[11px] text-slate-400">Explore connected concepts, dependencies, and grounded citations.</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              {searchResponse.knowledge_entities.map((ent) => (
+                <button
+                  key={ent.id}
+                  onClick={() => handleOpenGraphOnEntity(ent.name)}
+                  className="px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-900/80 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 hover:border-cyan-400 flex items-center gap-1.5 transition-all group"
+                  title={`Open ${ent.name} in Knowledge Graph`}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 group-hover:animate-ping" />
+                  <span>{ent.name}</span>
+                  <span className="text-[10px] text-slate-400 font-mono">({ent.mention_count})</span>
+                </button>
+              ))}
+              <button
+                onClick={() => {
+                  setIsGraphOpen(true);
+                  fetchGraph(query);
+                }}
+                className="px-2.5 py-1 rounded-lg text-xs font-medium bg-cyan-600 hover:bg-cyan-500 text-white flex items-center gap-1 transition-all"
+              >
+                <span>Explore Full Graph</span>
+                <ChevronRight className="w-3 h-3" />
+              </button>
             </div>
           </div>
         )}
@@ -1270,9 +1569,23 @@ export default function AegisDashboard() {
                   <span className="font-mono text-[10px] text-slate-600">
                     Chunk #{hit.chunk_index + 1}
                   </span>
-                  <span className="text-indigo-400/80 group-hover:text-indigo-300 flex items-center gap-1 text-[11px]">
-                    Inspect chunk & context <ChevronRight className="w-3 h-3" />
-                  </span>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleOpenGraphOnEntity(hit.title);
+                      }}
+                      className="text-cyan-400/80 hover:text-cyan-300 flex items-center gap-1 text-[11px] hover:underline"
+                      title="Explore entities and relationships for this document"
+                    >
+                      <Share2 className="w-3 h-3" />
+                      <span>Explore in Graph</span>
+                    </button>
+                    <span className="text-indigo-400/80 group-hover:text-indigo-300 flex items-center gap-1 text-[11px]">
+                      Inspect chunk & context <ChevronRight className="w-3 h-3" />
+                    </span>
+                  </div>
                 </div>
               </div>
             ))}
@@ -2915,14 +3228,665 @@ export default function AegisDashboard() {
         </div>
       )}
 
+      {/* Phase 7: Grounded Knowledge Graph Explorer Modal */}
+      {isGraphOpen && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-2 sm:p-4 animate-fadeIn">
+          <div className="bg-[#0c1220] border border-cyan-500/30 rounded-2xl w-full max-w-7xl h-[92vh] flex flex-col shadow-2xl overflow-hidden relative">
+            
+            {/* Modal Header */}
+            <div className="p-4 sm:p-5 border-b border-slate-800 bg-slate-900/90 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-cyan-600/20 border border-cyan-500/30 text-cyan-400">
+                  <Share2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-bold text-base text-white">Grounded Knowledge Graph</h3>
+                    <span className="text-[10px] px-2 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 font-mono font-semibold">
+                      Phase 7 Active
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Interactive topological graph of extracted entities and relationships with physical source span provenance.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                {/* Re-extract / Rebuild button */}
+                <button
+                  type="button"
+                  onClick={handleRebuildGraph}
+                  disabled={isRebuildingGraph}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-medium text-slate-200 flex items-center gap-1.5 transition-all"
+                  title="Rebuild Knowledge Graph across all documents"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 text-cyan-400 ${isRebuildingGraph ? 'animate-spin' : ''}`} />
+                  <span>{isRebuildingGraph ? 'Extracting...' : 'Re-extract All'}</span>
+                </button>
+
+                {/* Close modal button */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsGraphOpen(false);
+                    setSelectedEntityDetail(null);
+                    setSelectedEntityId(null);
+                  }}
+                  className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Filter & Control Toolbar */}
+            <div className="px-5 py-3 border-b border-slate-800/80 bg-slate-900/60 flex items-center justify-between gap-4 flex-wrap">
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Search entity input */}
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <input
+                    type="text"
+                    value={graphQuery}
+                    onChange={(e) => {
+                      setGraphQuery(e.target.value);
+                      fetchGraph(e.target.value);
+                    }}
+                    placeholder="Search graph entities..."
+                    className="pl-8 pr-3 py-1 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500/50 w-48 sm:w-56"
+                  />
+                  {graphQuery && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setGraphQuery('');
+                        fetchGraph('');
+                      }}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-xs"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+
+                {/* Type Filter Pills */}
+                <div className="flex items-center gap-1 bg-slate-950/80 p-1 rounded-lg border border-slate-800 text-xs">
+                  {['ALL', 'TECHNOLOGY', 'CONCEPT', 'ORGANIZATION', 'PERSON'].map((typeKey) => (
+                    <button
+                      key={typeKey}
+                      type="button"
+                      onClick={() => {
+                        setGraphTypeFilter(typeKey);
+                        fetchGraph(undefined, typeKey);
+                      }}
+                      className={`px-2.5 py-0.5 rounded-md text-[11px] font-medium transition-all capitalize ${
+                        graphTypeFilter === typeKey
+                          ? typeKey === 'TECHNOLOGY'
+                            ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-semibold'
+                            : typeKey === 'CONCEPT'
+                            ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 font-semibold'
+                            : typeKey === 'ORGANIZATION'
+                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-semibold'
+                            : typeKey === 'PERSON'
+                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 font-semibold'
+                            : 'bg-indigo-600 text-white font-semibold'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {typeKey.toLowerCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Edge Weight Slider & Zoom Controls */}
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2 text-xs text-slate-400">
+                  <span className="text-[11px] font-mono">Min Weight:</span>
+                  <input
+                    type="range"
+                    min="0.0"
+                    max="3.0"
+                    step="0.5"
+                    value={graphMinWeight}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      setGraphMinWeight(val);
+                      fetchGraph(undefined, undefined, val);
+                    }}
+                    className="w-20 accent-cyan-500 cursor-pointer"
+                  />
+                  <span className="text-cyan-400 font-mono text-[11px] w-6">{graphMinWeight.toFixed(1)}x</span>
+                </div>
+
+                {/* Zoom controls */}
+                <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setGraphZoom(prev => Math.min(2.5, prev + 0.2))}
+                    className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800"
+                    title="Zoom In"
+                  >
+                    <ZoomIn className="w-3.5 h-3.5" />
+                  </button>
+                  <span className="text-[10px] font-mono text-slate-400 px-1">{Math.round(graphZoom * 100)}%</span>
+                  <button
+                    type="button"
+                    onClick={() => setGraphZoom(prev => Math.max(0.4, prev - 0.2))}
+                    className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800"
+                    title="Zoom Out"
+                  >
+                    <ZoomOut className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setGraphZoom(1);
+                      setGraphPan({ x: 0, y: 0 });
+                    }}
+                    className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800 text-[10px]"
+                    title="Reset Zoom & Pan"
+                  >
+                    Reset
+                  </button>
+                </div>
+
+                {/* Stats badge */}
+                <div className="hidden md:flex items-center gap-2 text-[11px] font-mono text-slate-400 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
+                  <span className="text-cyan-400 font-semibold">{graphData.nodes.length}</span> nodes
+                  <span>•</span>
+                  <span className="text-indigo-400 font-semibold">{graphData.edges.length}</span> edges
+                </div>
+              </div>
+            </div>
+
+            {/* Main Interactive Canvas & Provenance Drawer Layout */}
+            <div className="flex-1 flex overflow-hidden relative">
+              
+              {/* Left / Center: Interactive SVG Visualizer */}
+              <div 
+                className="flex-1 relative overflow-hidden bg-[#090e1a] cursor-grab active:cursor-grabbing select-none"
+                onMouseDown={(e) => {
+                  if ((e.target as HTMLElement).tagName === 'svg' || (e.target as HTMLElement).id === 'graph-canvas-bg') {
+                    setIsPanning(true);
+                    setPanStart({ x: e.clientX - graphPan.x, y: e.clientY - graphPan.y });
+                  }
+                }}
+                onMouseMove={(e) => {
+                  if (draggingNodeId) {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const mouseX = (e.clientX - rect.left - graphPan.x) / graphZoom;
+                    const mouseY = (e.clientY - rect.top - graphPan.y) / graphZoom;
+                    setGraphData(prev => ({
+                      ...prev,
+                      nodes: prev.nodes.map(n => n.id === draggingNodeId ? { ...n, x: mouseX, y: mouseY } : n)
+                    }));
+                  } else if (isPanning) {
+                    setGraphPan({ x: e.clientX - panStart.x, y: e.clientY - panStart.y });
+                  }
+                }}
+                onMouseUp={() => {
+                  setDraggingNodeId(null);
+                  setIsPanning(false);
+                }}
+              >
+                {/* SVG Graph Canvas */}
+                <svg
+                  ref={svgRef}
+                  id="graph-canvas-bg"
+                  className="w-full h-full"
+                  viewBox="0 0 900 650"
+                >
+                  <defs>
+                    {/* Star Grid Pattern */}
+                    <pattern id="grid-pattern" width="40" height="40" patternUnits="userSpaceOnUse">
+                      <circle cx="20" cy="20" r="0.8" fill="#1e293b" />
+                    </pattern>
+
+                    {/* Edge Arrow Marker */}
+                    <marker
+                      id="arrow-default"
+                      viewBox="0 0 10 10"
+                      refX="22"
+                      refY="5"
+                      markerWidth="5"
+                      markerHeight="5"
+                      orient="auto-start-reverse"
+                    >
+                      <path d="M 0 1 L 9 5 L 0 9 z" fill="#475569" />
+                    </marker>
+
+                    <marker
+                      id="arrow-active"
+                      viewBox="0 0 10 10"
+                      refX="24"
+                      refY="5"
+                      markerWidth="6"
+                      markerHeight="6"
+                      orient="auto-start-reverse"
+                    >
+                      <path d="M 0 1 L 9 5 L 0 9 z" fill="#22d3ee" />
+                    </marker>
+                  </defs>
+
+                  {/* Grid background */}
+                  <rect width="100%" height="100%" fill="url(#grid-pattern)" />
+
+                  <g transform={`translate(${graphPan.x}, ${graphPan.y}) scale(${graphZoom})`}>
+                    
+                    {/* Edges */}
+                    {graphData.edges.map((edge) => {
+                      const sourceNode = graphData.nodes.find(n => n.id === edge.source);
+                      const targetNode = graphData.nodes.find(n => n.id === edge.target);
+                      if (!sourceNode || !targetNode) return null;
+
+                      const isConnectedToSelected = selectedEntityId === edge.source || selectedEntityId === edge.target;
+                      const isConnectedToHovered = hoveredNodeId === edge.source || hoveredNodeId === edge.target;
+                      const isHighlighted = isConnectedToSelected || isConnectedToHovered;
+
+                      const midX = ((sourceNode.x || 0) + (targetNode.x || 0)) / 2;
+                      const midY = ((sourceNode.y || 0) + (targetNode.y || 0)) / 2;
+
+                      return (
+                        <g key={edge.id} className="transition-all duration-300">
+                          <line
+                            x1={sourceNode.x || 0}
+                            y1={sourceNode.y || 0}
+                            x2={targetNode.x || 0}
+                            y2={targetNode.y || 0}
+                            stroke={isHighlighted ? '#06b6d4' : '#334155'}
+                            strokeWidth={isHighlighted ? 2.5 : Math.max(1, edge.weight * 0.9)}
+                            strokeOpacity={isHighlighted ? 0.9 : 0.45}
+                            markerEnd={isHighlighted ? "url(#arrow-active)" : "url(#arrow-default)"}
+                          />
+                          {/* Relationship type badge on edge center */}
+                          {(isHighlighted || edge.weight >= 1.5) && (
+                            <g transform={`translate(${midX}, ${midY})`}>
+                              <rect
+                                x="-32"
+                                y="-8"
+                                width="64"
+                                height="16"
+                                rx="4"
+                                fill="#0f172a"
+                                stroke={isHighlighted ? '#06b6d4' : '#334155'}
+                                strokeWidth="0.8"
+                                opacity="0.9"
+                              />
+                              <text
+                                textAnchor="middle"
+                                dy="3.5"
+                                fontSize="7.5"
+                                fontFamily="monospace"
+                                fill={isHighlighted ? '#67e8f9' : '#94a3b8'}
+                                fontWeight="bold"
+                              >
+                                {edge.relation_type.length > 12 ? edge.relation_type.slice(0, 10) + '..' : edge.relation_type}
+                              </text>
+                            </g>
+                          )}
+                        </g>
+                      );
+                    })}
+
+                    {/* Nodes */}
+                    {graphData.nodes.map((node) => {
+                      const colors = getNodeColor(node.entity_type);
+                      const isSelected = selectedEntityId === node.id;
+                      const isHovered = hoveredNodeId === node.id;
+                      const radius = Math.min(26, Math.max(16, 16 + (node.degree || 0) * 1.5));
+
+                      return (
+                        <g
+                          key={node.id}
+                          transform={`translate(${node.x || 0}, ${node.y || 0})`}
+                          className="cursor-pointer"
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            setDraggingNodeId(node.id);
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedEntityId(node.id);
+                            fetchEntityDetail(node.id);
+                          }}
+                          onMouseEnter={() => setHoveredNodeId(node.id)}
+                          onMouseLeave={() => setHoveredNodeId(null)}
+                        >
+                          {/* Outer pulse/glow on select or hover */}
+                          {(isSelected || isHovered) && (
+                            <circle
+                              r={radius + 8}
+                              fill="none"
+                              stroke={colors.stroke}
+                              strokeWidth="2"
+                              strokeDasharray="4 2"
+                              opacity="0.8"
+                              className="animate-spin"
+                              style={{ transformOrigin: 'center', animationDuration: '8s' }}
+                            />
+                          )}
+
+                          {/* Node circle */}
+                          <circle
+                            r={radius}
+                            fill={colors.bg}
+                            fillOpacity={isSelected ? 0.95 : 0.8}
+                            stroke={isSelected ? '#ffffff' : colors.stroke}
+                            strokeWidth={isSelected ? 2.5 : 1.5}
+                            className="transition-all duration-200"
+                            style={{ filter: `drop-shadow(0 0 10px ${colors.glow})` }}
+                          />
+
+                          {/* Node Icon / Initial */}
+                          <text
+                            textAnchor="middle"
+                            dy="4"
+                            fontSize={radius > 20 ? "11" : "9"}
+                            fontWeight="bold"
+                            fill="#ffffff"
+                            pointerEvents="none"
+                          >
+                            {node.name.slice(0, 2).toUpperCase()}
+                          </text>
+
+                          {/* Node Label underneath */}
+                          <g transform={`translate(0, ${radius + 14})`}>
+                            <rect
+                              x={-((node.name.length * 3.6) + 8)}
+                              y="-8"
+                              width={(node.name.length * 7.2) + 16}
+                              height="16"
+                              rx="4"
+                              fill="#090d16"
+                              stroke={isSelected ? colors.stroke : '#1e293b'}
+                              strokeWidth="0.8"
+                              opacity="0.9"
+                            />
+                            <text
+                              textAnchor="middle"
+                              dy="3"
+                              fontSize="9.5"
+                              fontWeight="600"
+                              fill={isSelected ? '#ffffff' : colors.text}
+                              pointerEvents="none"
+                            >
+                              {node.name}
+                            </text>
+                          </g>
+
+                          {/* Degree badge */}
+                          {node.degree > 0 && (
+                            <g transform={`translate(${radius - 4}, ${-radius + 4})`}>
+                              <circle r="7" fill="#0f172a" stroke={colors.stroke} strokeWidth="1" />
+                              <text
+                                textAnchor="middle"
+                                dy="2.5"
+                                fontSize="7"
+                                fontFamily="monospace"
+                                fill={colors.text}
+                                fontWeight="bold"
+                              >
+                                {node.degree}
+                              </text>
+                            </g>
+                          )}
+                        </g>
+                      );
+                    })}
+                  </g>
+                </svg>
+
+                {/* Floating Guide Bar when canvas is empty */}
+                {graphData.nodes.length === 0 && !isLoadingGraph && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center bg-slate-950/70 pointer-events-none">
+                    <Share2 className="w-12 h-12 text-slate-600 mb-2 animate-pulse" />
+                    <h4 className="text-base font-semibold text-slate-300">No Entities Extracted Yet</h4>
+                    <p className="text-xs text-slate-500 max-w-md mt-1 mb-4">
+                      The Grounded Knowledge Graph automatically extracts technologies, concepts, and relationships from ingested documents.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleRebuildGraph}
+                      className="pointer-events-auto px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold flex items-center gap-2 transition-all shadow-lg shadow-cyan-600/30"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      <span>Re-extract Knowledge Graph</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Loading overlay */}
+                {isLoadingGraph && (
+                  <div className="absolute top-4 left-4 flex items-center gap-2 bg-slate-900/90 border border-slate-800 px-3 py-1.5 rounded-lg text-xs font-mono text-cyan-400">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Loading graph topology...</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Right: Entity Grounding & Provenance Inspector Drawer */}
+              <div className="w-full sm:w-[420px] border-l border-slate-800 bg-[#0a0f1d] flex flex-col overflow-y-auto">
+                {selectedEntityDetail ? (
+                  <div className="p-5 flex flex-col gap-5">
+                    {/* Entity Header */}
+                    <div className="flex items-start justify-between gap-3 border-b border-slate-800/80 pb-4">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[10px] px-2 py-0.5 rounded font-mono font-semibold uppercase border ${
+                            selectedEntityDetail.entity_type === 'TECHNOLOGY' ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-300' :
+                            selectedEntityDetail.entity_type === 'CONCEPT' ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-300' :
+                            selectedEntityDetail.entity_type === 'ORGANIZATION' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' :
+                            selectedEntityDetail.entity_type === 'PERSON' ? 'bg-amber-500/10 border-amber-500/30 text-amber-300' :
+                            'bg-purple-500/10 border-purple-500/30 text-purple-300'
+                          }`}>
+                            {selectedEntityDetail.entity_type}
+                          </span>
+                          <span className="text-[10px] font-mono text-slate-500">
+                            {selectedEntityDetail.mention_count} mention{selectedEntityDetail.mention_count === 1 ? '' : 's'}
+                          </span>
+                        </div>
+                        <h3 className="font-bold text-lg text-white mt-1">
+                          {selectedEntityDetail.name}
+                        </h3>
+                        {selectedEntityDetail.description && (
+                          <p className="text-xs text-slate-400 mt-1">{selectedEntityDetail.description}</p>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteEntity(selectedEntityDetail.id)}
+                          className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+                          title="Remove entity from graph"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedEntityDetail(null);
+                            setSelectedEntityId(null);
+                          }}
+                          className="p-1.5 rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition-colors"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Connected Relationships */}
+                    <div className="flex flex-col gap-2.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                          Connected Relationships ({selectedEntityDetail.relationships.length})
+                        </span>
+                      </div>
+
+                      {selectedEntityDetail.relationships.length === 0 ? (
+                        <div className="p-3 rounded-lg bg-slate-900/60 border border-slate-800 text-xs text-slate-500">
+                          No direct relationships mapped yet.
+                        </div>
+                      ) : (
+                        <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto pr-1">
+                          {selectedEntityDetail.relationships.map((rel) => (
+                            <div
+                              key={rel.id}
+                              onClick={() => {
+                                setSelectedEntityId(rel.other_entity.id);
+                                fetchEntityDetail(rel.other_entity.id);
+                              }}
+                              className="p-2.5 rounded-lg bg-slate-900/80 border border-slate-800/80 hover:border-cyan-500/40 flex items-center justify-between gap-2 cursor-pointer transition-all group"
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-cyan-300 border border-slate-700">
+                                  {rel.relation_type}
+                                </span>
+                                <span className="text-xs font-medium text-slate-200 group-hover:text-cyan-300 transition-colors">
+                                  {rel.direction === 'outgoing' ? '➔' : '⬅'} {rel.other_entity.name}
+                                </span>
+                              </div>
+                              <span className="text-[10px] font-mono text-slate-500">{rel.weight.toFixed(1)}x</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Grounded Physical Source Citations */}
+                    <div className="flex flex-col gap-3 pt-2 border-t border-slate-800/80">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                          <BookOpen className="w-3.5 h-3.5 text-cyan-400" />
+                          <span>Grounded Source Citations ({selectedEntityDetail.citations.length})</span>
+                        </span>
+                      </div>
+
+                      {selectedEntityDetail.citations.length === 0 ? (
+                        <div className="p-3 rounded-lg bg-slate-900/60 border border-slate-800 text-xs text-slate-500">
+                          No source grounding records recorded.
+                        </div>
+                      ) : (
+                        <div className="flex flex-col gap-3">
+                          {selectedEntityDetail.citations.map((cit) => (
+                            <div
+                              key={cit.grounding_id}
+                              className="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col gap-2 hover:border-cyan-500/30 transition-all"
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  {getSourceIcon(cit.mime_type, cit.source_type)}
+                                  <h4 className="font-semibold text-xs text-white truncate max-w-[200px]">
+                                    {cit.document_title}
+                                  </h4>
+                                </div>
+                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/30 text-cyan-300">
+                                  {cit.anchor_label}
+                                </span>
+                              </div>
+
+                              {/* Context Snippet Quote */}
+                              <blockquote className="text-xs text-slate-300 bg-slate-950/80 p-2.5 rounded-lg border border-slate-800/60 font-serif leading-relaxed italic">
+                                "{cit.context_snippet}"
+                              </blockquote>
+
+                              <div className="flex items-center justify-between text-[10px] font-mono text-slate-500 pt-1">
+                                <span>Span: [{cit.span_start}:{cit.span_end}]</span>
+                                <span>Confidence: {Math.round(cit.confidence * 100)}%</span>
+                              </div>
+
+                              {/* Action button to open document inspector */}
+                              <div className="flex justify-end pt-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setIsGraphOpen(false);
+                                    handleOpenDocLocation(cit.document_id, cit.chunk_index);
+                                  }}
+                                  className="text-[11px] text-cyan-400 hover:text-cyan-300 flex items-center gap-1 font-sans font-medium"
+                                >
+                                  <span>View in Document Reader</span>
+                                  <ChevronRight className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                  </div>
+                ) : (
+                  /* Empty state when no entity is selected */
+                  <div className="p-8 flex-1 flex flex-col items-center justify-center text-center gap-4">
+                    <div className="p-3.5 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400">
+                      <Share2 className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h4 className="font-semibold text-sm text-slate-200">Entity Grounding Inspector</h4>
+                      <p className="text-xs text-slate-500 mt-1 max-w-xs">
+                        Select any node in the graph to inspect typed relationships and explore its physical grounded source provenance in original documents.
+                      </p>
+                    </div>
+
+                    {/* Top Hub Entities List */}
+                    {graphStats && graphStats.top_entities && graphStats.top_entities.length > 0 && (
+                      <div className="w-full flex flex-col gap-2 mt-4 pt-4 border-t border-slate-800 text-left">
+                        <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
+                          Top Hub Entities
+                        </span>
+                        <div className="flex flex-col gap-1.5">
+                          {graphStats.top_entities.map((hub) => (
+                            <button
+                              key={hub.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedEntityId(hub.id);
+                                fetchEntityDetail(hub.id);
+                              }}
+                              className="p-2 rounded-lg bg-slate-900/60 hover:bg-slate-800 border border-slate-800/80 hover:border-cyan-500/30 text-xs text-slate-300 flex items-center justify-between transition-all"
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="w-2 h-2 rounded-full bg-cyan-400" />
+                                <span className="font-medium">{hub.name}</span>
+                              </div>
+                              <span className="text-[10px] font-mono text-slate-500">{hub.mention_count} mentions</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-3 px-5 border-t border-slate-800 bg-slate-900/60 flex items-center justify-between text-xs text-slate-500 font-mono">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span>Grounding Verification: 100% Traceable to Physical Document Chunks</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-cyan-400">Phase 7: Grounded Knowledge Graph Active</span>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      )}
+
       {/* Footer */}
       <footer className="border-t border-slate-800/80 py-4 px-6 text-center text-xs text-slate-500 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <ShieldCheck className="w-4 h-4 text-emerald-400" />
           <span>Aegis Personal Search & Research Engine</span>
         </div>
-        <div className="text-[11px] font-mono text-indigo-400">
-          Phase 6: Personal Knowledge Engine Active
+        <div className="text-[11px] font-mono text-cyan-400">
+          Phase 7: Grounded Knowledge Graph Active
         </div>
       </footer>
     </main>

@@ -67,8 +67,8 @@ Frontend (Next.js / React / TypeScript / Tailwind CSS)
 - [x] **Phase 2: Controlled Web Crawler** — Allowlist-based crawling, URL frontier management, JS rendering, `robots.txt` compliance & crawl dashboard.
 - [x] **Phase 3: Search Quality & Ranking** — Multi-signal ranking function (BM25 + authority + freshness), "Why this result?" breakdown inspector.
 - [x] **Phase 5: Document Intelligence** — Exact location tracking (pages, paragraphs, bboxes, code lines), persistent storage, dynamic PyMuPDF PDF page renderer & highlighter, surrounding reading context navigation, and inline PDF/code viewer.
-- [ ] **Phase 6: Personal Knowledge Engine** — Data classification (Public/Private/Sensitive), source enable/disable toggle.
-- [ ] **Phase 7: Grounded Knowledge Graph** — Entity & relationship extraction with source span grounding, interactive graph visualizer.
+- [x] **Phase 6: Personal Knowledge Engine** — Data classification (Public/Private/Sensitive), source enable/disable toggle.
+- [x] **Phase 7: Grounded Knowledge Graph** — Entity & relationship extraction with source span grounding, interactive graph visualizer.
 - [ ] **Phase 8: Private RAG & Citation Inspector** — Local Ollama LLM integration, strict prompt sandbox, automated citation validator.
 - [ ] **Phase 9: Autonomous Research Agent** — Multi-step query planner, iterative web/doc retrieval, research brief synthesizer.
 - [ ] **Phase 10: Production Hardening** — Prometheus/Grafana observability, security sandbox audit, CLI & browser extension.
@@ -185,6 +185,37 @@ Aegis functions as a unified private knowledge base with granular privacy contro
 - **Knowledge Analytics & Telemetry**:
   - `GET /api/v1/knowledge/summary`: Live distribution of knowledge across privacy tiers, source types, and storage health.
 - **Knowledge Studio UI**: Intuitive header modal for live source toggling, privacy tier distribution charts, and source inspection.
+
+---
+
+## 🕸️ Grounded Knowledge Graph & Provenance Grounding (Phase 7)
+
+Aegis extracts structured knowledge from unstructured documents into an authoritative PostgreSQL-backed knowledge graph with 100% verifiable source grounding:
+- **Entity & Semantic Concept Extraction**:
+  - Automatically identifies software technologies, algorithms, concepts, organizations, and methodologies from all ingested documents.
+  - Multi-method extraction combining curated domain lexicons, capitalized proper noun sequences, and syntactic definition patterns.
+- **Typed Relationship Extraction**:
+  - Automatically infers directional relationships (`USES`, `IMPLEMENTS`, `INTEGRATES_WITH`, `DEPENDS_ON`, `BASED_ON`, `CREATED_BY`, `PART_OF`, `ASSOCIATED_WITH`).
+  - Proximity co-occurrence and dependency pattern parsing.
+- **Physical Source Span Grounding**:
+  - Every extracted entity and relationship maintains an immutable link to its source chunk:
+    - **`document_id` & `document_title`**
+    - **`anchor_label`**: Page numbers, paragraph blocks, or source code line numbers from Phase 5 Document Intelligence.
+    - **`span_start` & `span_end`**: Exact character index offsets within the source chunk.
+    - **`context_snippet`**: Verifiable surrounding context quote.
+- **Knowledge Graph REST APIs**:
+  - `GET /api/v1/graph`: Graph topology (`nodes`, `edges`, `node_degrees`) for visual force layouts. Supports filtering by entity name query, comma-separated entity types, and edge weight thresholds.
+  - `GET /api/v1/graph/stats`: Global topology metrics (total nodes, edges, citations, entity type breakdown, top hub concepts).
+  - `GET /api/v1/graph/search`: Autocomplete entity search across canonical names.
+  - `GET /api/v1/graph/entity/{id}`: Entity deep dive with connected incoming/outgoing relationships and grounded source citations.
+  - `GET /api/v1/graph/subgraph`: 1-hop or 2-hop neighborhood ego-subgraph extraction.
+  - `POST /api/v1/graph/extract/{document_id}`: Re-extract/refresh graph for a document.
+  - `POST /api/v1/graph/extract-all`: Bulk rebuild knowledge graph across all documents in PostgreSQL.
+  - `DELETE /api/v1/graph/entity/{id}`: Remove entity with cascading relationship deletion.
+- **Interactive Visual Explorer & Grounding Inspector UI**:
+  - Header button launching full-screen interactive SVG force-directed constellation graph with node-dragging, zoom, pan, and type color coding.
+  - Entity Grounding Inspector drawer displaying connected relationships and physical document quote snippets with one-click navigation directly to Phase 5's Document Viewer / PDF Highlighter.
+  - Search discovery ribbon highlighting matching graph entities directly for any query.
 
 ---
 

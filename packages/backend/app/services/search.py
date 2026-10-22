@@ -154,15 +154,21 @@ class SearchService:
             reranked = ranking_scorer.rerank(query, fused_candidates)
             engine = "hybrid_rrf_multi_signal"
 
-        paginated = reranked[offset : offset + limit]
-        duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        matched_entities = []
+        if db:
+            try:
+                from app.services.knowledge_graph import knowledge_graph_service
+                matched_entities = await knowledge_graph_service.search_entities(db, query, limit=5)
+            except Exception:
+                matched_entities = []
 
         return {
             "query": query,
             "total": len(reranked),
             "latency_ms": duration_ms,
             "engine": engine,
-            "results": paginated
+            "results": paginated,
+            "knowledge_entities": matched_entities
         }
 
     async def _search_lexical(

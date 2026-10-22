@@ -37,6 +37,7 @@ class SearchResponse(BaseModel):
     latency_ms: float
     engine: str
     results: List[SearchHit]
+    knowledge_entities: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 @router.get("", response_model=SearchResponse)

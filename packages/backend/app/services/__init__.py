@@ -7,6 +7,7 @@ from app.services.qdrant import qdrant_service
 from app.services.document_intelligence import document_intelligence_service
 from app.services.source_manager import source_manager
 from app.services.knowledge_engine import knowledge_engine
+from app.services.knowledge_graph import knowledge_graph_service
 
 __all__ = [
     "opensearch_service",
@@ -18,4 +19,5 @@ __all__ = [
     "document_intelligence_service",
     "source_manager",
     "knowledge_engine",
+    "knowledge_graph_service",
 ]

@@ -13,6 +13,7 @@ from app.services.opensearch import opensearch_service
 from app.services.embedding import embedding_service
 from app.services.qdrant import qdrant_service
 from app.services.source_manager import source_manager
+from app.services.knowledge_graph import knowledge_graph_service
 from app.core.logging import logger
 
 
@@ -148,6 +149,13 @@ class IngestionService:
                 logger.info(f"Indexed {qdrant_indexed} vectors in Qdrant for document {doc_id}")
         except Exception as q_err:
             logger.warning(f"Failed to index vectors in Qdrant for document {doc_id}: {q_err}")
+
+        # 7. Extract into Grounded Knowledge Graph (Phase 7)
+        if db and hasattr(doc, "id") and doc.id:
+            try:
+                await knowledge_graph_service.extract_from_document(db, doc.id)
+            except Exception as kg_err:
+                logger.warning(f"Could not extract knowledge graph for document {doc.id}: {kg_err}")
 
         return {
             "document": doc.to_dict() if hasattr(doc, "to_dict") else {"id": doc_id, "title": final_title},

@@ -103,6 +103,7 @@ async def init_db():
     import app.models.document  # noqa: F401
     import app.models.crawler   # noqa: F401
     import app.models.source    # noqa: F401
+    import app.models.graph     # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
